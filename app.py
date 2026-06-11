@@ -1228,130 +1228,169 @@ with onglets[8]:
 # ----------------------------------------------------------------------
 with onglets[9]:
     st.subheader("Méthodologie et interprétation")
+    # --- 0. Préparation des données ------------------------------------
+    st.markdown("#### 0. Préparation des données (commune à tous les tests)")
     st.markdown(
-        r"""
-#### 0. Préparation des données (commune à tous les tests)
-- La 1ʳᵉ colonne est convertie en **dates** (`pandas.to_datetime`, format jour/mois), les lignes
-  triées par ordre chronologique ; les autres colonnes sont forcées en numérique (gestion des
-  virgules décimales et des espaces).
-- Si vous fournissez des **prix**, l'app calcule les **rendements logarithmiques**
-  $r_t = \ln(P_t/P_{t-1})\times 100$ (fonction `to_log_returns`, en %) ; option rendements
-  arithmétiques. Si vous fournissez déjà des rendements, ils sont utilisés tels quels.
-- Le curseur **« Plage d'étude »** (barre latérale) filtre les dates **avant** tout calcul :
-  chaque test est donc estimé uniquement sur la sous-période choisie.
-- Le **seuil de significativité** (1 %, 5 %, 10 %) pilote tous les verdicts affichés.
+        "- La 1ʳᵉ colonne est convertie en **dates** (`pandas.to_datetime`), les lignes triées "
+        "par ordre chronologique ; les autres colonnes sont forcées en numérique (virgules "
+        "décimales et espaces gérés).\n"
+        "- Si vous fournissez des **prix**, l'app calcule les **rendements logarithmiques** "
+        "rₜ = ln(Pₜ / Pₜ₋₁) × 100 (`to_log_returns`, en %) ; option rendements arithmétiques. "
+        "Des rendements fournis directement sont utilisés tels quels.\n"
+        "- Le curseur **« Plage d'étude »** (barre latérale) filtre les dates **avant** tout "
+        "calcul : chaque test est estimé uniquement sur la sous-période choisie.\n"
+        "- Le **seuil de significativité** (1 %, 5 %, 10 %) pilote tous les verdicts affichés."
+    )
 
-#### 1. Test ADF (Augmented Dickey-Fuller) — stationnarité
-On estime $\Delta y_t = \alpha + \beta t + \gamma\, y_{t-1} + \sum \delta_i \Delta y_{t-i} + \varepsilon_t$.
-**H₀ : γ = 0** (racine unitaire, non stationnaire). Une p-value faible ⟹ série **stationnaire**.
-Les **prix** sont généralement I(1) (non stationnaires) ; leurs **rendements** sont I(0).
-> **Réalisation :** `statsmodels.tsa.stattools.adfuller` sur la série (rendements ou prix au
-> choix). Le **nombre de retards est choisi automatiquement par le critère AIC** (`autolag="AIC"`).
-> La spécification est sélectionnable : constante (`c`), constante + tendance (`ct`, défaut pour
-> les prix) ou aucune (`n`). p-value et valeurs critiques par la méthode de MacKinnon.
+    # --- 1. ADF --------------------------------------------------------
+    st.markdown("#### 1. Test ADF (Augmented Dickey-Fuller) — stationnarité")
+    st.latex(r"\Delta y_t = \alpha + \beta\,t + \gamma\,y_{t-1} "
+             r"+ \sum_i \delta_i\,\Delta y_{t-i} + \varepsilon_t")
+    st.markdown(
+        "**H₀ : γ = 0** (racine unitaire, série non stationnaire). Une p-value faible ⟹ série "
+        "**stationnaire**. Les **prix** sont généralement I(1) ; leurs **rendements** sont I(0).\n\n"
+        "> **Réalisation :** `statsmodels.tsa.stattools.adfuller`. Le **nombre de retards est "
+        "choisi par le critère AIC** (`autolag=\"AIC\"`). Spécification sélectionnable : constante "
+        "(`c`), constante + tendance (`ct`, défaut pour les prix) ou aucune (`n`). p-value et "
+        "valeurs critiques par la méthode de MacKinnon."
+    )
 
-#### 2. Test ARCH-LM (Engle, 1982) — effets ARCH
-On régresse $\hat\varepsilon_t^2$ sur ses $q$ retards ; la statistique $LM = T\cdot R^2 \sim \chi^2_q$.
-**H₀ : pas d'effets ARCH.** Un rejet ⟹ **volatilité groupée** ⟹ un modèle GARCH est pertinent.
-> **Réalisation :** `statsmodels.stats.diagnostic.het_arch`, appliqué à la série **centrée**
-> (rendement moins sa moyenne). Le **nombre de retards** est réglable (curseur). On reporte la
-> statistique LM et sa p-value $\chi^2$, ainsi que la version en test F.
+    # --- 2. ARCH-LM ----------------------------------------------------
+    st.markdown("#### 2. Test ARCH-LM (Engle, 1982) — effets ARCH")
+    st.latex(r"LM = T\cdot R^2 \;\sim\; \chi^2_q "
+             r"\quad\text{(régression de } \hat\varepsilon_t^2 \text{ sur ses } q \text{ retards)}")
+    st.markdown(
+        "**H₀ : pas d'effets ARCH.** Un rejet ⟹ **volatilité groupée** ⟹ un modèle GARCH est "
+        "pertinent.\n\n"
+        "> **Réalisation :** `statsmodels.stats.diagnostic.het_arch`, sur la série **centrée** "
+        "(rendement moins sa moyenne). **Nombre de retards** réglable (curseur). On reporte la "
+        "statistique LM et sa p-value χ², ainsi que la version en test F."
+    )
 
-#### 3. GARCH(p, q) univarié (Bollerslev, 1986)
-$$\sigma_t^2 = \omega + \sum_{i=1}^{p}\alpha_i\,\varepsilon_{t-i}^2 + \sum_{j=1}^{q}\beta_j\,\sigma_{t-j}^2$$
-- **α** : réaction aux chocs récents ; **β** : mémoire de la volatilité.
-- **Persistance = α + β** ; proche de 1 ⟹ chocs durables.
-- **EGARCH / GJR-GARCH** captent l'**asymétrie** (effet de levier).
-> **Réalisation :** package `arch` (`arch_model`, `rescale=False`), estimé par **maximum de
-> vraisemblance** (`fit`). Sont réglables : ordres $p, q$, équation de moyenne (constante / zéro /
-> AR), type (GARCH, EGARCH, GJR-GARCH) et **loi des innovations** (normale, **Student**, Student
-> asymétrique, GED — Student par défaut). La persistance vaut $\alpha+\beta$ ($+\gamma/2$ si terme
-> asymétrique) ; AIC/BIC et la demi-vie $\ln(0{,}5)/\ln(\alpha+\beta)$ sont reportés. Un **ARCH-LM
-> sur les résidus standardisés** vérifie qu'il ne reste pas d'effet ARCH.
+    # --- 3. GARCH ------------------------------------------------------
+    st.markdown("#### 3. GARCH(p, q) univarié (Bollerslev, 1986)")
+    st.latex(r"\sigma_t^2 = \omega + \sum_{i=1}^{p}\alpha_i\,\varepsilon_{t-i}^2 "
+             r"+ \sum_{j=1}^{q}\beta_j\,\sigma_{t-j}^2")
+    st.markdown(
+        "- **α** : réaction aux chocs récents ; **β** : mémoire de la volatilité.\n"
+        "- **Persistance = α + β** ; proche de 1 ⟹ chocs durables.\n"
+        "- **EGARCH / GJR-GARCH** captent l'**asymétrie** (effet de levier).\n\n"
+        "> **Réalisation :** package `arch` (`arch_model`, `rescale=False`), estimé par **maximum "
+        "de vraisemblance** (`fit`). Réglables : ordres p, q, équation de moyenne (constante / "
+        "zéro / AR), type (GARCH, EGARCH, GJR-GARCH) et **loi des innovations** (normale, "
+        "**Student** par défaut, Student asymétrique, GED). La persistance vaut α + β (+ γ/2 si "
+        "terme asymétrique) ; AIC/BIC et la demi-vie ln(0,5)/ln(α + β) sont reportés. Un **ARCH-LM "
+        "sur les résidus standardisés** vérifie qu'il ne reste pas d'effet ARCH."
+    )
 
-#### 4. Causalité de Granger (1969)
-X **cause** Y au sens de Granger si les valeurs passées de X améliorent la prévision de Y.
-⚠️ Requiert des séries **stationnaires** (rendements) ; c'est une **précédence temporelle**.
-> **Réalisation :** `statsmodels.tsa.stattools.grangercausalitytests` sur les deux séries de
-> rendements alignées. Le test est lancé dans les **deux sens** et pour tous les retards de 1 au
-> maximum choisi ; on reporte la **statistique F** (`ssr_ftest`) et sa p-value par retard.
+    # --- 4. Granger ----------------------------------------------------
+    st.markdown("#### 4. Causalité de Granger (1969)")
+    st.markdown(
+        "X **cause** Y au sens de Granger si les valeurs passées de X améliorent la prévision de "
+        "Y. ⚠️ Requiert des séries **stationnaires** (rendements) ; c'est une **précédence "
+        "temporelle**, pas une causalité structurelle.\n\n"
+        "> **Réalisation :** `statsmodels.tsa.stattools.grangercausalitytests` sur les deux séries "
+        "de rendements alignées. Le test est lancé dans les **deux sens** et pour tous les retards "
+        "de 1 au maximum choisi ; on reporte la **statistique F** (`ssr_ftest`) et sa p-value par "
+        "retard."
+    )
 
-#### 5. Contagion de Forbes-Rigobon (2002)
-$$\rho^{*} = \frac{\rho}{\sqrt{1 + \delta\,(1 - \rho^{2})}}, \qquad
-\delta = \frac{\sigma^2_{\text{crise}}}{\sigma^2_{\text{stable}}} - 1,$$
-où $\sigma^2$ est la variance du **marché-source**. On compare $\rho^{*}$ (crise) à $\rho$ (stable).
-- **H₀ :** $\rho^{*} = \rho_{\text{stable}}$ ⟹ *pas de contagion* ; **H₁ :** $\rho^{*} > \rho_{\text{stable}}$ ⟹ *contagion*.
-> **Réalisation :** calcul direct en `numpy`/`scipy`. La **fenêtre de crise** est délimitée par un
-> curseur de dates (le reste = période stable). Les corrélations stable/crise sont des Pearson
-> (`np.corrcoef`) sur chaque sous-échantillon ; $\delta$ vient des variances du marché-source.
-> Le test compare $\rho^{*}$ et $\rho_{\text{stable}}$ via la **transformation $z$ de Fisher**
-> ($\mathrm{SE}=\sqrt{1/(n_{\text{crise}}-3)+1/(n_{\text{stable}}-3)}$), en unilatéral par défaut.
-> Chaque sous-période doit compter ≥ 5 observations.
+    # --- 5. Forbes-Rigobon --------------------------------------------
+    st.markdown("#### 5. Contagion de Forbes-Rigobon (2002)")
+    st.latex(r"\rho^{*} = \frac{\rho}{\sqrt{1 + \delta\,(1 - \rho^{2})}}, "
+             r"\qquad \delta = \frac{\sigma^2_{\text{crise}}}{\sigma^2_{\text{stable}}} - 1")
+    st.markdown(
+        "où σ² est la variance du **marché-source**. On compare ρ\\* (crise) à ρ (stable).\n"
+        "- **H₀ :** ρ\\* = ρ stable ⟹ *pas de contagion*.\n"
+        "- **H₁ :** ρ\\* > ρ stable ⟹ *contagion*.\n\n"
+        "> **Réalisation :** calcul direct en `numpy`/`scipy`. La **fenêtre de crise** est "
+        "délimitée par un curseur de dates (le reste = période stable). Les corrélations "
+        "stable/crise sont des Pearson (`np.corrcoef`) sur chaque sous-échantillon ; δ vient des "
+        "variances du marché-source. Le test compare ρ\\* et ρ stable via la **transformation z de "
+        "Fisher** (SE = √[1/(n_crise − 3) + 1/(n_stable − 3)]), en unilatéral par défaut. Chaque "
+        "sous-période doit compter ≥ 5 observations.\n\n"
+        "> Conclusion célèbre : « **No Contagion, Only Interdependence** »."
+    )
 
-> Conclusion célèbre : « **No Contagion, Only Interdependence** ».
+    # --- 6. DCC bivarié ------------------------------------------------
+    st.markdown("#### 6. DCC-GARCH bivarié (Engle, 2002)")
+    st.latex(r"Q_t = (1 - a - b)\,\bar Q + a\,z_{t-1}z_{t-1}' + b\,Q_{t-1}, "
+             r"\qquad R_t = \operatorname{diag}(Q_t)^{-1/2}\,Q_t\,\operatorname{diag}(Q_t)^{-1/2}")
+    st.markdown(
+        "**a + b < 1** : la corrélation ρₜ = Rₜ[1,2] est stationnaire et revient vers sa "
+        "moyenne.\n\n"
+        "> **Réalisation (2 étapes, maison) :** (1) un **GARCH univarié** sur chaque série "
+        "(package `arch`) donne les **résidus standardisés** zₜ ; (2) la matrice inconditionnelle "
+        "Q̄ est la covariance empirique des zₜ, puis **(a, b) est estimé par maximum de "
+        "vraisemblance** (log-vraisemblance gaussienne de la corrélation, "
+        "`scipy.optimize.minimize`, Nelder-Mead, contrainte a, b > 0 et a + b < 1). Les "
+        "**écarts-types** viennent d'une **Hessienne numérique** (différences finies), donc "
+        "approximatifs. Sortie : la série ρₜ + moyennes par sous-période."
+    )
 
-#### 6. DCC-GARCH bivarié (Engle, 2002)
-$$Q_t = (1 - a - b)\,\bar{Q} + a\,(z_{t-1} z_{t-1}') + b\,Q_{t-1}, \quad
-R_t = \mathrm{diag}(Q_t)^{-1/2}\,Q_t\,\mathrm{diag}(Q_t)^{-1/2}.$$
-- **a + b < 1** : la corrélation $\rho_t = R_t[1,2]$ est stationnaire et revient vers sa moyenne.
-> **Réalisation (2 étapes, implémentée à la main) :** (1) un **GARCH univarié** est estimé sur
-> chaque série (package `arch`) pour obtenir les **résidus standardisés** $z_t$ ; (2) la matrice
-> inconditionnelle $\bar Q$ est la covariance empirique des $z_t$, puis les paramètres
-> **$(a,b)$ sont estimés par maximum de vraisemblance** (log-vraisemblance gaussienne de la
-> corrélation, `scipy.optimize.minimize`, méthode Nelder-Mead, contrainte $a,b>0$ et $a+b<1$).
-> Les **écarts-types** viennent d'une **Hessienne numérique** (différences finies), donc
-> approximatifs. Sortie : la série $\rho_t$ + moyennes par sous-période.
+    # --- 6 bis. DCC multivarié ----------------------------------------
+    st.markdown("#### 6 bis. DCC-GARCH multivarié (N séries)")
+    st.latex(r"\bar\rho_t = \frac{2}{N(N-1)}\sum_{i<j} R_t[i,j]"
+             r"\qquad\text{(indice d'intégration)}")
+    st.markdown(
+        "Même modèle, généralisé à **N marchés** : Qₜ et Rₜ deviennent des **matrices N × N**, et "
+        "les scalaires **(a, b) sont communs à toutes les paires** (DCC « scalaire » d'Engle). "
+        "L'indice d'intégration ρ̄ₜ résume la corrélation moyenne entre tous les couples, semaine "
+        "par semaine.\n\n"
+        "> **Réalisation (`dcc_garch_multivariate`, maison) :** (1) un **GARCH univarié par "
+        "série** donne le vecteur des résidus standardisés zₜ ; (2) Q̄ = cov(zₜ), puis (a, b) sont "
+        "estimés par **maximum de vraisemblance gaussienne multivariée** "
+        "(−½ ∑ₜ [ ln|Rₜ| + zₜ′ Rₜ⁻¹ zₜ ], `scipy.optimize`, Nelder-Mead). À chaque date, ln|Rₜ| "
+        "et zₜ′ Rₜ⁻¹ zₜ utilisent `numpy.linalg.slogdet` et `solve` ; écarts-types par **Hessienne "
+        "numérique**. Sorties : **matrice de corrélation moyenne** R̄, indice d'intégration ρ̄ₜ, et "
+        "la corrélation conditionnelle de **chaque couple** (i, j)."
+    )
 
-#### 6 bis. DCC-GARCH multivarié ($N$ séries)
-Même modèle, généralisé à $N$ marchés : $Q_t$ et $R_t$ sont des **matrices $N\times N$**, et
-les scalaires $(a,b)$ sont **communs à toutes les paires** (DCC « scalaire » d'Engle). On résume
-la dynamique par l'**indice d'intégration** $\bar\rho_t = \frac{2}{N(N-1)}\sum_{i<j} R_t[i,j]$
-(corrélation moyenne entre tous les couples, semaine par semaine).
-> **Réalisation (`dcc_garch_multivariate`, maison) :** (1) un **GARCH univarié par série**
-> (package `arch`) donne le vecteur des résidus standardisés $z_t$ ; (2) $\bar Q = \mathrm{cov}(z_t)$,
-> puis $(a,b)$ sont estimés par **maximum de vraisemblance gaussienne multivariée**
-> ($-\tfrac12\sum_t [\ln|R_t| + z_t' R_t^{-1} z_t]$, `scipy.optimize`, Nelder-Mead). À chaque date,
-> $\ln|R_t|$ et $z_t'R_t^{-1}z_t$ utilisent `numpy.linalg.slogdet` et `solve`. Écarts-types par
-> **Hessienne numérique**. Sorties : **matrice de corrélation moyenne** $\bar R$, indice
-> d'intégration $\bar\rho_t$, et la corrélation conditionnelle de **chaque couple** $(i,j)$.
+    # --- 7. Diebold-Yilmaz --------------------------------------------
+    st.markdown("#### 7. Spillover de volatilité — Diebold & Yilmaz (2012)")
+    st.latex(r"S = \frac{1}{N}\sum_{i\neq j}\tilde\theta_{ij}\times 100"
+             r"\qquad \text{Net}_j = (\text{émis}) - (\text{reçu})")
+    st.markdown(
+        "Décomposition **généralisée** (KPPS, invariante à l'ordre) de la variance d'erreur de "
+        "prévision d'un VAR à l'horizon H. θ̃ᵢⱼ = part de la volatilité future de i due à j.\n\n"
+        "> **Réalisation :** les **volatilités conditionnelles** de chaque série viennent d'un "
+        "GARCH univarié (`garch_vol_matrix`). Un **VAR** est estimé dessus "
+        "(`statsmodels.tsa.api.VAR`) ; la décomposition généralisée se calcule à partir de la "
+        "matrice de covariance des résidus (Σ) et des matrices moyennes mobiles (`ma_rep`), puis "
+        "**chaque ligne est normalisée à 100 %**. Retards du VAR, horizon H, loi des marges et "
+        "**fenêtre glissante** sont réglables ; l'indice glissant ré-estime le modèle sur des "
+        "fenêtres successives. Calculs **mis en cache**."
+    )
 
-#### 7. Spillover de volatilité — Diebold & Yilmaz (2012)
-Décomposition **généralisée** (KPPS, invariante à l'ordre) de la variance d'erreur de prévision
-d'un VAR, à l'horizon $H$. $\tilde\theta_{ij}$ = part de la volatilité future de $i$ due à $j$.
-- **Indice total** $= \frac{1}{N}\sum_{i\neq j}\tilde\theta_{ij}\times 100$ ; **Net**$_j$ = émis − reçu.
-> **Réalisation :** les **volatilités conditionnelles** de chaque série proviennent d'un GARCH
-> univarié (`garch_vol_matrix`). Un **VAR** est estimé dessus (`statsmodels.tsa.api.VAR`) ;
-> la décomposition généralisée est calculée à partir de la matrice de covariance des résidus
-> ($\Sigma$) et des matrices moyennes mobiles (`ma_rep`), puis **chaque ligne est normalisée à
-> 100 %**. Retards du VAR, horizon $H$, loi des marges et **fenêtre glissante** sont réglables ;
-> l'indice glissant ré-estime le modèle sur des fenêtres successives. Calculs **mis en cache**.
+    # --- 8. Portefeuille ----------------------------------------------
+    st.markdown("#### 8. Portefeuille à variance minimale dynamique (covariance DCC)")
+    st.latex(r"H_t = D_t R_t D_t, \qquad w_t = \frac{H_t^{-1}\mathbf 1}{\mathbf 1'\,H_t^{-1}\mathbf 1}, "
+             r"\qquad w_{1,t} = \frac{\sigma_{2,t}^2 - \operatorname{cov}_t}"
+             r"{\sigma_{1,t}^2 + \sigma_{2,t}^2 - 2\,\operatorname{cov}_t}")
+    st.markdown(
+        "> **Réalisation :** la covariance conditionnelle est reconstruite à partir du **DCC "
+        "estimé à l'onglet 6** (ρₜ et les volatilités GARCH des deux marges). Les poids sont "
+        "calculés semaine par semaine (option **sans vente à découvert** : poids bornés à [0, 1]). "
+        "Les **rendements de portefeuille** utilisent les **poids décalés d'une période** (pas "
+        "d'anticipation). On compare la **volatilité annualisée** (× √52) à un 50/50 et aux actifs "
+        "seuls ; la **réduction de variance** chiffre la prime de diversification. Ratio de "
+        "couverture βₜ = covₜ / σ²₂,ₜ."
+    )
 
-#### 8. Portefeuille à variance minimale dynamique (covariance DCC)
-$H_t = D_t R_t D_t$ ⟹ poids $w_t = \frac{H_t^{-1}\mathbf 1}{\mathbf 1' H_t^{-1}\mathbf 1}$ ;
-pour deux actifs $w_{1,t} = \frac{\sigma_{2,t}^2 - \mathrm{cov}_t}{\sigma_{1,t}^2 + \sigma_{2,t}^2 - 2\,\mathrm{cov}_t}$.
-> **Réalisation :** la covariance conditionnelle est reconstruite à partir du **DCC estimé à
-> l'onglet 6** ($\rho_t$ et les volatilités GARCH des deux marges). Les poids sont calculés
-> semaine par semaine (option **sans vente à découvert** : poids bornés à [0, 1]). Les
-> **rendements de portefeuille** utilisent les **poids décalés d'une période** (pas
-> d'anticipation). On compare la **volatilité annualisée** ($\times\sqrt{52}$) à un 50/50 et aux
-> actifs seuls ; la **réduction de variance** chiffre la prime de diversification. Ratio de
-> couverture $\beta_t = \mathrm{cov}_t/\sigma_{2,t}^2$.
-
----
-**Récapitulatif des outils** (code dans `econometrics.py`) :
-
-| Test | Bibliothèque / fonction | Estimation |
-|------|------------------------|-----------|
-| ADF | `statsmodels.adfuller` | retards par AIC |
-| ARCH-LM | `statsmodels.het_arch` | régression auxiliaire |
-| GARCH | `arch.arch_model` | max. de vraisemblance |
-| Granger | `statsmodels.grangercausalitytests` | test F sur VAR |
-| Forbes-Rigobon | `numpy` / `scipy` | corrélations + $z$ de Fisher |
-| DCC-GARCH bivarié | maison + `arch` + `scipy.optimize` | 2 étapes, MLE |
-| DCC-GARCH multivarié | maison + `arch` + `scipy.optimize` | $R_t$ $N\times N$, MLE gaussienne |
-| Diebold-Yilmaz | `statsmodels.VAR` + maison | GFEVD généralisée |
-| Portefeuille | maison (`numpy`) | min-variance analytique |
-        """
+    st.markdown("---")
+    st.markdown("**Récapitulatif des outils** (code dans `econometrics.py`) :")
+    st.markdown(
+        "| Test | Bibliothèque / fonction | Estimation |\n"
+        "|------|------------------------|-----------|\n"
+        "| ADF | `statsmodels.adfuller` | retards par AIC |\n"
+        "| ARCH-LM | `statsmodels.het_arch` | régression auxiliaire |\n"
+        "| GARCH | `arch.arch_model` | max. de vraisemblance |\n"
+        "| Granger | `statsmodels.grangercausalitytests` | test F sur VAR |\n"
+        "| Forbes-Rigobon | `numpy` / `scipy` | corrélations + z de Fisher |\n"
+        "| DCC-GARCH bivarié | maison + `arch` + `scipy.optimize` | 2 étapes, MLE |\n"
+        "| DCC-GARCH multivarié | maison + `arch` + `scipy.optimize` | Rₜ N×N, MLE gaussienne |\n"
+        "| Diebold-Yilmaz | `statsmodels.VAR` + maison | GFEVD généralisée |\n"
+        "| Portefeuille | maison (`numpy`) | min-variance analytique |"
     )
 
 st.divider()
