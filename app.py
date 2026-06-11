@@ -44,6 +44,18 @@ BLEU = "#1f4e79"
 ROUGE = "#c0392b"
 ORANGE = "#e67e22"
 
+# Masque l'icône de téléchargement CSV native des tableaux (elle produit un CSV
+# virgule illisible sous Excel français). On garde la recherche et le plein écran.
+# Les téléchargements passent par les boutons « Excel » dédiés, toujours propres.
+st.markdown(
+    """
+    <style>
+      [data-testid="stElementToolbar"] button[title="Download as CSV"] { display: none !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # ----------------------------------------------------------------------
 # Fonctions utilitaires
@@ -84,15 +96,21 @@ def noms_feuilles(contenu: bytes, nom: str):
     return pd.ExcelFile(io.BytesIO(contenu)).sheet_names
 
 
-def telecharger_df(df: pd.DataFrame, label: str, fichier: str):
-    # Export en vrai .xlsx : chaque variable dans sa propre colonne (l'index,
-    # souvent la date, devient la 1re colonne). Évite le problème du CSV ouvert
-    # en colonne unique sous Excel français (séparateur point-virgule).
+def telecharger_df(df: pd.DataFrame, label: str, fichier: str, key=None):
+    # Export en vrai .xlsx : chaque variable dans sa propre colonne. Évite le
+    # problème du CSV ouvert en colonne unique sous Excel français (séparateur
+    # point-virgule). L'index n'est écrit que s'il porte de l'information
+    # (dates, noms de séries) — pas un simple 0,1,2…
     if not fichier.lower().endswith(".xlsx"):
         fichier = fichier.rsplit(".", 1)[0] + ".xlsx"
+    ecrire_index = not isinstance(df.index, pd.RangeIndex)
+    out = df
+    if ecrire_index and df.index.name is None:        # évite l'en-tête « Unnamed: 0 »
+        out = df.copy()
+        out.index.name = "Élément"
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=True, sheet_name="Donnees")
+        out.to_excel(writer, index=ecrire_index, sheet_name="Donnees")
         ws = writer.sheets["Donnees"]
         for col in ws.columns:
             largeur = max((len(str(c.value)) for c in col if c.value is not None), default=10)
@@ -100,6 +118,7 @@ def telecharger_df(df: pd.DataFrame, label: str, fichier: str):
     st.download_button(
         label, buffer.getvalue(), file_name=fichier,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=key,
     )
 
 
@@ -446,6 +465,8 @@ with onglets[0]:
             f"Tableau complet et défilable : {len(df)} lignes affichées "
             f"(toutes les observations chargées sont utilisées dans les calculs)."
         )
+        telecharger_df(df, "⬇️ Télécharger les données (Excel)",
+                       "donnees.xlsx", key="dl_donnees")
     with c2:
         st.metric("Nombre de séries", len(series_cols))
         st.metric("Nombre de points", len(df))
@@ -467,6 +488,8 @@ with onglets[0]:
         "Kurtosis > 3 = queues épaisses ; Jarque-Bera (p-value) < 5 % = rejet de "
         "la normalité — fréquent en finance et justifie une loi de Student pour le GARCH."
     )
+    telecharger_df(desc, "⬇️ Télécharger les statistiques (Excel)",
+                   "statistiques_descriptives.xlsx", key="dl_desc")
 
     st.divider()
     st.subheader("Graphiques")
@@ -635,6 +658,8 @@ with onglets[3]:
                 width="stretch",
             )
             st.caption("Significativité : *** 1 %, ** 5 %, * 10 %.")
+            telecharger_df(coef, "⬇️ Télécharger les coefficients (Excel)",
+                           f"garch_{serie}.xlsx", key="dl_garch")
 
             # Persistance
             if g["persistence"] >= 0.99:
@@ -831,6 +856,8 @@ with onglets[5]:
                     comp.style.format({"Corrélation": "{:.3f}", "Stat. z": "{:.3f}", "p-value": "{:.4f}"}),
                     width="stretch",
                 )
+                telecharger_df(comp, "⬇️ Télécharger le test (Excel)",
+                               f"forbes_rigobon_{serie_src}_{serie_rcp}.xlsx", key="dl_fr")
                 if (res["p_value_brut"] < alpha_signif) and (res["p_value_ajuste"] >= alpha_signif):
                     st.info(
                         "💡 Cas emblématique de Forbes-Rigobon : le test **brut** conclut à tort "
@@ -940,6 +967,8 @@ with onglets[6]:
                     width="stretch", hide_index=True,
                 )
                 st.caption("Écarts-types numériques (Hessienne par différences finies), donc approximatifs.")
+                telecharger_df(tab_dcc, "⬇️ Télécharger les paramètres DCC (Excel)",
+                               f"dcc_parametres_{p1}_{p2}.xlsx", key="dl_dccparam")
 
                 if d["persistance"] >= 0.999:
                     st.warning(
@@ -1264,6 +1293,8 @@ with onglets[8]:
                     .background_gradient(cmap="RdYlGn_r", subset=["Volatilité annualisée (%)"]),
                     width="stretch",
                 )
+                telecharger_df(pf["resume"], "⬇️ Télécharger le récapitulatif (Excel)",
+                               f"portefeuille_resume_{p1}_{p2}.xlsx", key="dl_pf_resume_biv")
                 r_a = pf["reduction_vs_a"] * 100
                 r_b = pf["reduction_vs_5050"] * 100
                 st.success(
@@ -1315,6 +1346,8 @@ with onglets[8]:
                     index=noms_pf,
                 )
                 st.dataframe(pm.style.format("{:.1f}"), width="stretch")
+                telecharger_df(pm, "⬇️ Télécharger les poids moyens (Excel)",
+                               "portefeuille_poids_moyens.xlsx", key="dl_pf_poids_mv")
 
                 st.markdown("**Volatilité annualisée des stratégies :**")
                 st.dataframe(
@@ -1322,6 +1355,8 @@ with onglets[8]:
                     .background_gradient(cmap="RdYlGn_r", subset=["Volatilité annualisée (%)"]),
                     width="stretch",
                 )
+                telecharger_df(pf["resume"], "⬇️ Télécharger le récapitulatif (Excel)",
+                               "portefeuille_resume_multivarie.xlsx", key="dl_pf_resume_mv")
                 r_eq = pf["reduction_vs_eq"] * 100
                 meilleur = min(pf["reduction_vs_asset"], key=pf["reduction_vs_asset"].get)
                 r_best = pf["reduction_vs_asset"][meilleur] * 100
