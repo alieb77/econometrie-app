@@ -122,6 +122,31 @@ def telecharger_df(df: pd.DataFrame, label: str, fichier: str, key=None):
     )
 
 
+def ecrire_rapport_xlsx(feuilles: dict) -> bytes:
+    """Écrit un dict {nom_feuille: DataFrame} dans un classeur Excel mis en forme
+    (en-têtes bleus, volets figés, largeurs de colonnes ajustées)."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    entete_font = Font(bold=True, color="FFFFFF")
+    entete_fill = PatternFill("solid", fgColor="1F4E79")
+    centre = Alignment(horizontal="center", vertical="center")
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for nom, df in feuilles.items():
+            sname = str(nom)[:31]
+            ecrire_index = not isinstance(df.index, pd.RangeIndex)
+            df.to_excel(writer, sheet_name=sname, index=ecrire_index)
+            ws = writer.sheets[sname]
+            for cell in ws[1]:
+                cell.font = entete_font
+                cell.fill = entete_fill
+                cell.alignment = centre
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                largeur = max((len(str(c.value)) for c in col if c.value is not None), default=10)
+                ws.column_dimensions[col[0].column_letter].width = min(max(largeur + 2, 11), 44)
+    return buffer.getvalue()
+
+
 @st.cache_data(show_spinner=False)
 def calc_vol_matrix(returns_sel: pd.DataFrame, dist: str):
     return ec.garch_vol_matrix(returns_sel, dist=dist)
@@ -356,6 +381,7 @@ if st.session_state.get("data_sig") != _sig:
     st.session_state["data_sig"] = _sig
     st.session_state.pop("dcc_resultat", None)
     st.session_state.pop("dccm_resultat", None)
+    st.session_state.pop("rapport_xlsx", None)
 
 # --- Nature des données : prix ou rendements ? ------------------------
 st.sidebar.divider()
@@ -450,6 +476,7 @@ onglets = st.tabs([
     "6️⃣ DCC-GARCH bivarié",
     "7️⃣ Spillover (Diebold-Yilmaz)",
     "8️⃣ Portefeuille (DCC)",
+    "📑 Rapport Excel",
     "ℹ️ Méthodologie",
 ])
 
@@ -1411,9 +1438,83 @@ with onglets[8]:
                 st.error(f"Erreur : {e}")
 
 # ----------------------------------------------------------------------
-# Onglet 9 — Méthodologie
+# Onglet 9 — Rapport Excel complet (autour d'une série principale)
 # ----------------------------------------------------------------------
 with onglets[9]:
+    st.subheader("Rapport Excel complet")
+    st.markdown(
+        "Génère **un seul fichier Excel multi-feuilles**, organisé autour d'une "
+        "**série principale** (la pierre angulaire) comparée à toutes les autres : "
+        "données & rendements, statistiques descriptives, stationnarité (ADF), effets "
+        "ARCH-LM, DCC-GARCH, causalité de Granger et Forbes-Rigobon."
+    )
+    if len(series_cols) < 2:
+        st.warning("Il faut au moins **2 séries** pour générer un rapport.")
+    else:
+        principale = st.selectbox("Série principale (pierre angulaire)",
+                                  series_cols, key="rap_principale")
+        autres_rap = [c for c in series_cols if c != principale]
+        st.caption(f"Comparée à : **{', '.join(autres_rap)}**.")
+
+        inclure_fr_rap = st.checkbox(
+            "Inclure le test de contagion Forbes-Rigobon (nécessite une fenêtre de crise)",
+            value=True, key="rap_fr",
+        )
+        crise_d = crise_f = None
+        if inclure_fr_rap:
+            if not index_dates:
+                st.info("Les dates ne sont pas reconnues : Forbes-Rigobon sera ignoré.")
+            else:
+                dmin_r = returns.index.min().date()
+                dmax_r = returns.index.max().date()
+                covid_d = max(dmin_r, pd.Timestamp("2020-02-19").date())
+                covid_f = min(dmax_r, pd.Timestamp("2020-06-30").date())
+                if covid_d >= covid_f:          # données hors COVID → plage complète
+                    covid_d, covid_f = dmin_r, dmax_r
+                cc1, cc2 = st.columns(2)
+                crise_d = cc1.date_input("Début de crise", value=covid_d,
+                                         min_value=dmin_r, max_value=dmax_r, key="rap_cd")
+                crise_f = cc2.date_input("Fin de crise", value=covid_f,
+                                         min_value=dmin_r, max_value=dmax_r, key="rap_cf")
+
+        maxlag_rap = st.slider("Retards maximum (Granger)", 1, 8, 4, key="rap_lag")
+        st.caption("Le rapport respecte la **Plage d'étude** et la **fréquence** "
+                   "réglées dans la barre latérale.")
+
+        if st.button("📑 Générer le rapport Excel", key="run_rapport"):
+            try:
+                with st.spinner("Calcul de tous les tests (cela peut prendre ~30 s)…"):
+                    feuilles = ec.rapport_complet(
+                        returns, principale, prices=prices,
+                        crise_debut=crise_d, crise_fin=crise_f,
+                        maxlag_granger=maxlag_rap,
+                        inclure_fr=inclure_fr_rap and index_dates,
+                        freq_label=freq,
+                    )
+                    xlsx_bytes = ecrire_rapport_xlsx(feuilles)
+                st.session_state["rapport_xlsx"] = xlsx_bytes
+                st.session_state["rapport_nom"] = f"rapport_{principale}.xlsx"
+                st.session_state["rapport_feuilles"] = list(feuilles.keys())
+            except Exception as e:
+                st.session_state.pop("rapport_xlsx", None)
+                st.error(f"Erreur lors de la génération : {e}")
+
+        if st.session_state.get("rapport_xlsx") is not None:
+            f_list = st.session_state["rapport_feuilles"]
+            st.success(f"✅ Rapport prêt : **{len(f_list)} feuilles** générées.")
+            st.download_button(
+                "⬇️ Télécharger le rapport Excel",
+                st.session_state["rapport_xlsx"],
+                file_name=st.session_state["rapport_nom"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_rapport",
+            )
+            st.caption("Feuilles : " + " · ".join(f_list))
+
+# ----------------------------------------------------------------------
+# Onglet 10 — Méthodologie
+# ----------------------------------------------------------------------
+with onglets[10]:
     st.subheader("Méthodologie et interprétation")
     # --- 0. Préparation des données ------------------------------------
     st.markdown("#### 0. Préparation des données (commune à tous les tests)")

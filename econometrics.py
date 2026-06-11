@@ -844,3 +844,168 @@ def dcc_min_variance_portfolio_mv(
         "allow_short": allow_short,
         "n_obs": T,
     }
+
+
+# ======================================================================
+# 10. Rapport complet multi-feuilles (autour d'une série principale)
+# ======================================================================
+def rapport_complet(
+    returns: pd.DataFrame,
+    principal: str,
+    prices: pd.DataFrame = None,
+    crise_debut=None,
+    crise_fin=None,
+    maxlag_granger: int = 4,
+    dcc_dist: str = "t",
+    dcc_vol: str = "GARCH",
+    dcc_o: int = 0,
+    inclure_fr: bool = True,
+    arch_lags: int = 12,
+    freq_label: str = "Hebdomadaire",
+) -> dict:
+    """Construit un rapport complet, organisé autour d'une **série principale**
+    comparée à toutes les autres. Renvoie un dictionnaire ordonné
+    {nom_de_feuille: DataFrame} prêt à écrire dans un classeur Excel.
+
+    Feuilles : Synthèse, Données & Rendements, Stats descriptives,
+    Stationnarité ADF, Effets ARCH-LM, DCC-GARCH (principale vs autres),
+    Causalité Granger (2 sens), Forbes-Rigobon (2 sens, optionnel).
+    """
+    autres = [c for c in returns.columns if c != principal]
+    if not autres:
+        raise ValueError("Il faut au moins deux séries (une principale + une autre).")
+    est_date = isinstance(returns.index, pd.DatetimeIndex)
+    feuilles = {}
+
+    # --- 0. Synthèse ---------------------------------------------------
+    periode = (f"{returns.index.min().date()} → {returns.index.max().date()}"
+               if est_date else f"{len(returns)} points")
+    if inclure_fr and est_date and crise_debut is not None and crise_fin is not None:
+        crise_txt = f"{pd.Timestamp(crise_debut).date()} → {pd.Timestamp(crise_fin).date()}"
+    elif not inclure_fr:
+        crise_txt = "non incluse"
+    else:
+        crise_txt = "—"
+    feuilles["Synthèse"] = pd.DataFrame({
+        "Information": [
+            "Série principale (pierre angulaire)", "Autres séries", "Fréquence",
+            "Période d'étude", "Observations (rendements)", "Fenêtre de crise (Forbes-Rigobon)",
+        ],
+        "Valeur": [
+            principal, " ; ".join(autres), freq_label, periode,
+            int(returns.dropna(how="all").shape[0]), crise_txt,
+        ],
+    })
+
+    # --- 1. Données & Rendements --------------------------------------
+    blocs = {}
+    if prices is not None:
+        for c in returns.columns:
+            if c in prices.columns:
+                blocs[f"{c} — prix"] = prices[c]
+    for c in returns.columns:
+        blocs[f"{c} — rendement (%)"] = returns[c]
+    donnees = pd.DataFrame(blocs)
+    if est_date:
+        donnees.index.name = "Date"
+    feuilles["Données & Rendements"] = donnees
+
+    # --- 2. Statistiques descriptives ---------------------------------
+    desc = pd.DataFrame({c: descriptive_stats(returns[c]) for c in returns.columns}).T
+    desc.index.name = "Série"
+    feuilles["Stats descriptives"] = desc.reset_index()
+
+    # --- 3. Stationnarité ADF (rendements + prix) ---------------------
+    lignes = []
+    for c in returns.columns:
+        try:
+            a = adf_test(returns[c], regression="c")
+            lignes.append({"Série": c, "Type": "Rendement", "Stat. ADF": a["statistique_adf"],
+                           "p-value": a["p_value"], "Retards": a["retards_utilises"],
+                           "Stationnaire (5 %)": a["stationnaire_5pct"]})
+        except Exception:
+            lignes.append({"Série": c, "Type": "Rendement", "Stat. ADF": np.nan,
+                           "p-value": np.nan, "Retards": np.nan, "Stationnaire (5 %)": "erreur"})
+        if prices is not None and c in prices.columns:
+            try:
+                a = adf_test(prices[c], regression="ct")
+                lignes.append({"Série": c, "Type": "Prix", "Stat. ADF": a["statistique_adf"],
+                               "p-value": a["p_value"], "Retards": a["retards_utilises"],
+                               "Stationnaire (5 %)": a["stationnaire_5pct"]})
+            except Exception:
+                pass
+    feuilles["Stationnarité ADF"] = pd.DataFrame(lignes)
+
+    # --- 4. Effets ARCH-LM --------------------------------------------
+    lignes = []
+    for c in returns.columns:
+        try:
+            a = arch_lm_test(returns[c], nlags=arch_lags)
+            lignes.append({"Série": c, "LM stat.": a["lm_stat"], "p-value (LM)": a["lm_p_value"],
+                           "F stat.": a["f_stat"], "p-value (F)": a["f_p_value"],
+                           "Retards": a["nlags"], "Effets ARCH (5 %)": a["effets_arch_5pct"]})
+        except Exception:
+            lignes.append({"Série": c, "LM stat.": np.nan, "p-value (LM)": np.nan,
+                           "F stat.": np.nan, "p-value (F)": np.nan, "Retards": arch_lags,
+                           "Effets ARCH (5 %)": "erreur"})
+    feuilles["Effets ARCH-LM"] = pd.DataFrame(lignes)
+
+    # --- 5. DCC-GARCH (principale vs chaque autre) --------------------
+    lignes = []
+    for o in autres:
+        try:
+            d = dcc_garch_bivariate(returns[principal], returns[o],
+                                    dist=dcc_dist, vol=dcc_vol, o=dcc_o)
+            lignes.append({
+                "Principale": principal, "Autre": o,
+                "a (réaction)": d["a"], "b (persistance)": d["b"], "a + b": d["persistance"],
+                "ρ moyenne": d["rho_moyenne"], "ρ min": d["rho_min"], "ρ max": d["rho_max"],
+                "ρ inconditionnelle": d["rho_inconditionnelle"], "n_obs": d["n_obs"],
+            })
+        except Exception as e:
+            lignes.append({"Principale": principal, "Autre": o, "a (réaction)": f"erreur : {e}"})
+    feuilles["DCC-GARCH"] = pd.DataFrame(lignes)
+
+    # --- 6. Causalité de Granger (les 2 sens, tous les retards) -------
+    lignes = []
+    for o in autres:
+        try:
+            g = granger_bidirectional(returns[principal].rename(principal),
+                                      returns[o].rename(o), maxlag=maxlag_granger)
+            for sens, tab in [(f"{principal} → {o}", g["a_vers_b"]),
+                              (f"{o} → {principal}", g["b_vers_a"])]:
+                for _, r in tab.iterrows():
+                    lignes.append({"Sens": sens, "Retard": int(r["Retard"]),
+                                   "F": r["F"], "p-value (F)": r["p-value (F)"],
+                                   "Significatif (5 %)": r["Significatif (5 %)"]})
+        except Exception as e:
+            lignes.append({"Sens": f"{principal} ↔ {o}", "Retard": np.nan, "F": np.nan,
+                           "p-value (F)": f"erreur : {e}", "Significatif (5 %)": ""})
+    feuilles["Causalité Granger"] = pd.DataFrame(lignes)
+
+    # --- 7. Forbes-Rigobon (les 2 sens) -------------------------------
+    if inclure_fr and est_date and crise_debut is not None and crise_fin is not None:
+        mask = pd.Series(
+            (returns.index >= pd.Timestamp(crise_debut)) & (returns.index <= pd.Timestamp(crise_fin)),
+            index=returns.index,
+        )
+        lignes = []
+        for o in autres:
+            for src, rcp in [(principal, o), (o, principal)]:
+                try:
+                    fr = forbes_rigobon_test(returns[src].rename(src),
+                                             returns[rcp].rename(rcp), mask)
+                    lignes.append({
+                        "Source (crise)": src, "Récepteur": rcp,
+                        "ρ stable": fr["rho_stable"], "ρ crise (brut)": fr["rho_crisis_brut"],
+                        "ρ crise (ajusté)": fr["rho_crisis_ajuste"], "δ (volatilité)": fr["delta_volatilite"],
+                        "z ajusté": fr["z_ajuste"], "p-value (ajusté)": fr["p_value_ajuste"],
+                        "Contagion (5 %)": fr["contagion_5pct"],
+                        "n stable": fr["n_stable"], "n crise": fr["n_crisis"],
+                    })
+                except Exception as e:
+                    lignes.append({"Source (crise)": src, "Récepteur": rcp,
+                                   "ρ stable": f"erreur : {e}"})
+        feuilles["Forbes-Rigobon"] = pd.DataFrame(lignes)
+
+    return feuilles
