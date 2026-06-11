@@ -85,8 +85,22 @@ def noms_feuilles(contenu: bytes, nom: str):
 
 
 def telecharger_df(df: pd.DataFrame, label: str, fichier: str):
-    csv = df.to_csv(index=True).encode("utf-8-sig")
-    st.download_button(label, csv, file_name=fichier, mime="text/csv")
+    # Export en vrai .xlsx : chaque variable dans sa propre colonne (l'index,
+    # souvent la date, devient la 1re colonne). Évite le problème du CSV ouvert
+    # en colonne unique sous Excel français (séparateur point-virgule).
+    if not fichier.lower().endswith(".xlsx"):
+        fichier = fichier.rsplit(".", 1)[0] + ".xlsx"
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=True, sheet_name="Donnees")
+        ws = writer.sheets["Donnees"]
+        for col in ws.columns:
+            largeur = max((len(str(c.value)) for c in col if c.value is not None), default=10)
+            ws.column_dimensions[col[0].column_letter].width = min(largeur + 2, 40)
+    st.download_button(
+        label, buffer.getvalue(), file_name=fichier,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -615,8 +629,8 @@ with onglets[3]:
 
             telecharger_df(
                 vol.to_frame("volatilite_conditionnelle"),
-                "⬇️ Télécharger la volatilité conditionnelle (CSV)",
-                f"volatilite_{serie}.csv",
+                "⬇️ Télécharger la volatilité conditionnelle (Excel)",
+                f"volatilite_{serie}.xlsx",
             )
 
             with st.expander("Voir le résumé complet du modèle (arch)"):
@@ -942,8 +956,8 @@ with onglets[6]:
 
                 telecharger_df(
                     rho_t.to_frame("rho_conditionnelle"),
-                    "⬇️ Télécharger la corrélation conditionnelle (CSV)",
-                    f"dcc_{p1}_{p2}.csv",
+                    "⬇️ Télécharger la corrélation conditionnelle (Excel)",
+                    f"dcc_{p1}_{p2}.xlsx",
                 )
 
 # ----------------------------------------------------------------------
@@ -1023,7 +1037,7 @@ with onglets[7]:
                     st.pyplot(fig)
                     st.caption("Les pics correspondent aux périodes de crise (intégration accrue des marchés).")
 
-                telecharger_df(tbl, "⬇️ Télécharger la table de spillover (CSV)", "spillover_dy.csv")
+                telecharger_df(tbl, "⬇️ Télécharger la table de spillover (Excel)", "spillover_dy.xlsx")
             except Exception as e:
                 st.error(f"Erreur : {e}")
 
@@ -1092,8 +1106,8 @@ with onglets[8]:
             ax.legend(loc="upper left", fontsize=8)
             st.pyplot(fig)
 
-            telecharger_df(s, "⬇️ Télécharger les poids et volatilités (CSV)",
-                           f"portefeuille_{p1}_{p2}.csv")
+            telecharger_df(s, "⬇️ Télécharger les poids et volatilités (Excel)",
+                           f"portefeuille_{p1}_{p2}.xlsx")
         except Exception as e:
             st.error(f"Erreur : {e}")
 
