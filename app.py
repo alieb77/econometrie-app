@@ -1208,6 +1208,15 @@ with onglets[8]:
         "**risque minimal** dont les poids **varient dans le temps**. Chiffre concrètement "
         "le **gain de diversification** et fournit un **ratio de couverture** dynamique."
     )
+    st.warning(
+        "⚠️ **Devises** : si les actifs ne sont pas dans la **même devise** "
+        "(ex. S&P 500 en USD, CAC 40 en EUR, MASI en MAD), la volatilité annualisée "
+        "ci-dessous **ignore le risque de change**. Elle correspond à un investisseur "
+        "raisonnant en devise locale (ou parfaitement couvert contre le change). Pour une "
+        "allocation réellement réalisable en une devise unique, convertissez d'abord les "
+        "indices dans cette devise. *(Sans effet sur les onglets DCC / spillover, qui mesurent "
+        "la co-évolution des marchés en devise locale — l'approche standard.)*"
+    )
     d = st.session_state.get("dcc_resultat")
     dm = st.session_state.get("dccm_resultat")
 
