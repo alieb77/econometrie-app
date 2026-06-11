@@ -122,7 +122,7 @@ def calc_dy_rolling(vol_df: pd.DataFrame, lags: int, horizon: int, window: int, 
 # BARRE LATÉRALE — chargement & préparation des données
 # ======================================================================
 st.sidebar.title("📂 Données")
-st.sidebar.caption("Série(s) hebdomadaire(s) d'indices boursiers.")
+st.sidebar.caption("Série(s) d'indices boursiers (hebdomadaires ou quotidiennes).")
 
 fichier = st.sidebar.file_uploader(
     "Fichier Excel ou CSV",
@@ -147,7 +147,8 @@ def guide_format():
         - **Colonnes suivantes = un indice par colonne**, avec son nom en en-tête
           (ex. `S&P 500`, `CAC 40`, `MASI (Maroc)`). Au moins **2 séries** pour les
           tests Granger, Forbes-Rigobon et DCC.
-        - **Une ligne = une semaine** (données **hebdomadaires**), sans trous au milieu.
+        - **Une ligne = une période** (données **hebdomadaires** ou **quotidiennes** —
+          réglez la fréquence dans la barre latérale), sans trous au milieu.
         - Les valeurs peuvent être des **prix** (niveaux) **ou** des **rendements** ;
           vous l'indiquez ensuite dans « Nature des données ».
         """
@@ -200,8 +201,8 @@ if fichier is None and not use_example:
     st.title("📈 Économétrie financière des indices boursiers")
     st.markdown(
         """
-        Cette application modélise, à partir d'une **série hebdomadaire de prix ou
-        de rendements** d'indices boursiers, les tests suivants :
+        Cette application modélise, à partir d'une **série de prix ou de rendements**
+        d'indices boursiers (**hebdomadaire ou quotidienne**), les tests suivants :
 
         | # | Test | Question posée |
         |---|------|----------------|
@@ -327,14 +328,15 @@ if index_dates and len(df) > 2:
     if (plage_etude[0] > dmin_g) or (plage_etude[1] < dmax_g):
         st.sidebar.caption(
             f"Analyse restreinte : {plage_etude[0]} → {plage_etude[1]} "
-            f"({df.shape[0]} semaines)."
+            f"({df.shape[0]} observations)."
         )
 
-# Si la fenêtre de données change, on invalide un éventuel résultat DCC mémorisé
+# Si la fenêtre de données change, on invalide les résultats DCC mémorisés
 _sig = (str(df.index.min()), str(df.index.max()), int(df.shape[0]))
 if st.session_state.get("data_sig") != _sig:
     st.session_state["data_sig"] = _sig
     st.session_state.pop("dcc_resultat", None)
+    st.session_state.pop("dccm_resultat", None)
 
 # --- Nature des données : prix ou rendements ? ------------------------
 st.sidebar.divider()
@@ -358,6 +360,24 @@ else:
     )
     returns = df * 100.0 if en_pct else df.copy()
     prices = None
+
+# Fréquence des données → pilote l'annualisation, les fenêtres et les libellés
+freq = st.sidebar.radio(
+    "Fréquence des données", ["Hebdomadaire", "Quotidienne"], key="freq",
+    help="Hebdomadaire : annualisation ×√52. Quotidienne : ×√252 (jours de bourse).",
+)
+if freq == "Quotidienne":
+    periods_per_year = 252
+    unite, unite_pl, unite_abbr = "jour", "jours", "j"
+    fenetre_roll = 120                       # ≈ 6 mois de bourse
+    dy_win_min, dy_win_max, dy_win_def, dy_win_step = 120, 750, 250, 10
+    dy_h_max = 30
+else:
+    periods_per_year = 52
+    unite, unite_pl, unite_abbr = "semaine", "semaines", "sem."
+    fenetre_roll = 26                        # ≈ 6 mois
+    dy_win_min, dy_win_max, dy_win_def, dy_win_step = 52, 260, 104, 4
+    dy_h_max = 20
 
 st.sidebar.divider()
 st.sidebar.metric("Séries détectées", len(series_cols))
@@ -626,7 +646,7 @@ with onglets[3]:
                 st.info(
                     f"Persistance = {g['persistence']:.3f} : la demi-vie d'un choc de "
                     f"volatilité est d'environ "
-                    f"{np.log(0.5)/np.log(g['persistence']):.1f} semaines."
+                    f"{np.log(0.5)/np.log(g['persistence']):.1f} {unite_pl}."
                 )
 
             # Diagnostic des résidus
@@ -819,11 +839,11 @@ with onglets[5]:
 
                 # Corrélation glissante + zone de crise
                 roll = (
-                    returns[serie_src].rolling(26).corr(returns[serie_rcp])
+                    returns[serie_src].rolling(fenetre_roll).corr(returns[serie_rcp])
                 )
                 fig, ax = plt.subplots(figsize=(10, 3.4))
                 ax.plot(roll.index, roll.values, color=BLEU, lw=1.2,
-                        label="Corrélation glissante (26 sem.)")
+                        label=f"Corrélation glissante ({fenetre_roll} {unite_abbr})")
                 ax.axvspan(d1, d2, color=ORANGE, alpha=0.25, label="Période de crise")
                 ax.axhline(res["rho_stable"], color="0.5", ls="--", lw=1,
                            label=f"ρ stable = {res['rho_stable']:.2f}")
@@ -1112,8 +1132,9 @@ with onglets[7]:
         sel = st.multiselect("Séries à inclure", series_cols, default=series_cols, key="dy_sel")
         c1, c2, c3, c4 = st.columns(4)
         dy_lags = c1.slider("Retards du VAR", 1, 6, 2, key="dy_lags")
-        dy_h = c2.slider("Horizon de prévision (sem.)", 4, 20, 10, key="dy_h")
-        dy_win = c3.slider("Fenêtre glissante (sem.)", 52, 260, 104, step=4, key="dy_win")
+        dy_h = c2.slider(f"Horizon de prévision ({unite_abbr})", 4, dy_h_max, 10, key="dy_h")
+        dy_win = c3.slider(f"Fenêtre glissante ({unite_abbr})", dy_win_min, dy_win_max,
+                           dy_win_def, step=dy_win_step, key="dy_win")
         dy_dist = c4.selectbox("Loi des marges GARCH",
                                ["t — Student", "normal — Normale", "ged — GED"], key="dy_dist")
         dy_dist_code = dy_dist.split(" ")[0]
@@ -1167,7 +1188,7 @@ with onglets[7]:
                     ax.plot(roll.index, roll.values, color=BLEU, lw=1.2)
                     ax.axhline(dy["total"], color="0.5", ls="--", lw=1,
                                label=f"Moyenne plein échantillon = {dy['total']:.0f} %")
-                    ax.set_title(f"Indice de spillover total glissant ({dy_win} sem.)")
+                    ax.set_title(f"Indice de spillover total glissant ({dy_win} {unite_abbr})")
                     ax.set_ylabel("%"); ax.legend(loc="upper left", fontsize=8)
                     st.pyplot(fig)
                     st.caption("Les pics correspondent aux périodes de crise (intégration accrue des marchés).")
@@ -1215,10 +1236,11 @@ with onglets[8]:
         # ==============================================================
         if choix_src.startswith("Bivarié"):
             p1, p2 = st.session_state.get("dcc_paire", (series_cols[0], series_cols[1]))
-            st.caption(f"Paire issue du DCC : **{p1}** et **{p2}** — {d['n_obs']} semaines.")
+            st.caption(f"Paire issue du DCC : **{p1}** et **{p2}** — {d['n_obs']} {unite_pl}.")
             try:
                 pf = ec.dcc_min_variance_portfolio(
                     d, returns[p1], returns[p2], allow_short=not long_only,
+                    periods_per_year=periods_per_year,
                 )
                 m1, m2, m3 = st.columns(3)
                 m1.metric(f"Poids moyen {p1}", f"{pf['poids_moyen_a']*100:.0f} %")
@@ -1253,7 +1275,7 @@ with onglets[8]:
                 ax.plot(s.index, s[f"Vol. {p1}"], color="0.6", lw=0.7, label=f"100 % {p1}")
                 ax.plot(s.index, s[f"Vol. {p2}"], color="0.4", lw=0.7, label=f"100 % {p2}")
                 ax.plot(s.index, s["Vol. min-variance"], color=ROUGE, lw=1.4, label="Min-variance (DCC)")
-                ax.set_ylabel("Volatilité conditionnelle (%/sem.)")
+                ax.set_ylabel(f"Volatilité conditionnelle (%/{unite_abbr})")
                 ax.set_title("Volatilité : portefeuille optimal vs actifs seuls")
                 ax.legend(loc="upper left", fontsize=8)
                 st.pyplot(fig)
@@ -1269,10 +1291,11 @@ with onglets[8]:
         else:
             noms_pf = list(dm["noms"])
             st.caption(f"Actifs issus du DCC multivarié : **{', '.join(noms_pf)}** "
-                       f"— {dm['n_obs']} semaines.")
+                       f"— {dm['n_obs']} {unite_pl}.")
             try:
                 pf = ec.dcc_min_variance_portfolio_mv(
                     dm, returns, allow_short=not long_only,
+                    periods_per_year=periods_per_year,
                 )
 
                 # poids moyens (tableau, car N peut être grand)
@@ -1316,7 +1339,7 @@ with onglets[8]:
                         label="Équipondéré (1/N)")
                 ax.plot(s.index, s["Vol. min-variance"], color=ROUGE, lw=1.4,
                         label="Min-variance (DCC)")
-                ax.set_ylabel("Volatilité conditionnelle (%/sem.)")
+                ax.set_ylabel(f"Volatilité conditionnelle (%/{unite_abbr})")
                 ax.set_title("Volatilité : portefeuille optimal vs équipondéré")
                 ax.legend(loc="upper left", fontsize=8)
                 st.pyplot(fig)
@@ -1473,9 +1496,10 @@ with onglets[9]:
     st.markdown(
         "> **Réalisation :** la covariance conditionnelle est reconstruite à partir du **DCC "
         "estimé à l'onglet 6** (ρₜ et les volatilités GARCH des deux marges). Les poids sont "
-        "calculés semaine par semaine (option **sans vente à découvert** : poids bornés à [0, 1]). "
+        "calculés à chaque période (option **sans vente à découvert** : poids bornés à [0, 1]). "
         "Les **rendements de portefeuille** utilisent les **poids décalés d'une période** (pas "
-        "d'anticipation). On compare la **volatilité annualisée** (× √52) à un 50/50 et aux actifs "
+        "d'anticipation). On compare la **volatilité annualisée** (× √52 en hebdomadaire, × √252 "
+        "en quotidien — selon la fréquence choisie dans la barre latérale) à un 50/50 et aux actifs "
         "seuls ; la **réduction de variance** chiffre la prime de diversification. Ratio de "
         "couverture βₜ = covₜ / σ²₂,ₜ."
     )
