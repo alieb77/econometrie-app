@@ -960,6 +960,118 @@ with onglets[6]:
                     f"dcc_{p1}_{p2}.xlsx",
                 )
 
+        # ==============================================================
+        # Version multivariée : N séries (matrice de corrélation complète)
+        # ==============================================================
+        st.divider()
+        st.markdown("### 🔗 Version multivariée — plusieurs séries à la fois")
+        st.markdown(
+            "Même modèle, généralisé à **N marchés** : on obtient la **matrice de "
+            "corrélation conditionnelle** complète et un **indice d'intégration** "
+            "(corrélation moyenne entre tous les couples), semaine par semaine. "
+            "Les paramètres **a** et **b** sont communs à toutes les paires (DCC scalaire)."
+        )
+        defaut_m = list(series_cols[:min(3, len(series_cols))])
+        choix_m = st.multiselect(
+            "Séries à inclure (2 minimum, idéalement 3 à 6)",
+            list(series_cols), default=defaut_m, key="dccm_series",
+        )
+        cm1, cm2 = st.columns(2)
+        modele_dccm = cm1.selectbox("Modèle de marge (GARCH)",
+                                    ["GARCH", "EGARCH", "GJR-GARCH (APARCH)"], key="dccm_modele")
+        loi_dccm = cm2.selectbox(
+            "Loi des innovations",
+            ["t — Student", "normal — Normale", "skewt — Student asymétrique", "ged — GED"],
+            index=0, key="dccm_dist",
+        )
+        loi_dccm_code = loi_dccm.split(" ")[0]
+        vol_dccm_code = {"GARCH": "GARCH", "EGARCH": "EGARCH",
+                         "GJR-GARCH (APARCH)": "APARCH"}[modele_dccm]
+        o_dccm = 1 if modele_dccm != "GARCH" else 0
+
+        lancer_dccm = st.button("▶️ Estimer le DCC-GARCH multivarié", key="run_dccm")
+        if len(choix_m) < 2:
+            st.warning("Sélectionnez au moins **deux séries**.")
+        else:
+            if lancer_dccm:
+                try:
+                    with st.spinner(f"Estimation de {len(choix_m)} GARCH puis du DCC multivarié…"):
+                        dm = ec.dcc_garch_multivariate(
+                            [returns[c] for c in choix_m], noms=list(choix_m),
+                            dist=loi_dccm_code, vol=vol_dccm_code, o=o_dccm,
+                        )
+                    st.session_state["dccm_resultat"] = dm
+                    st.session_state["dccm_series_ok"] = list(choix_m)
+                except Exception as e:
+                    st.session_state.pop("dccm_resultat", None)
+                    st.error(f"Erreur : {e}")
+
+            dm = st.session_state.get("dccm_resultat")
+            if dm is not None:
+                noms_ok = st.session_state.get("dccm_series_ok", list(choix_m))
+                if list(noms_ok) != list(choix_m):
+                    st.info(
+                        f"Résultat affiché pour : **{', '.join(noms_ok)}**. "
+                        "Cliquez sur « Estimer » pour recalculer sur la nouvelle sélection."
+                    )
+                st.caption(f"Spécification : **{dm['spec']}** — {dm['n_obs']} observations.")
+
+                mm1, mm2, mm3, mm4 = st.columns(4)
+                mm1.metric("a (réaction)", f"{dm['a']:.4f}")
+                mm2.metric("b (persistance)", f"{dm['b']:.4f}")
+                mm3.metric("a + b", f"{dm['persistance']:.4f}")
+                mm4.metric("Corr. moyenne", f"{dm['corr_moyenne']:.3f}")
+
+                if dm["persistance"] >= 0.999:
+                    st.warning(f"a + b ≈ {dm['persistance']:.3f} : corrélations quasi intégrées.")
+                else:
+                    st.info(f"a + b = {dm['persistance']:.3f} < 1 : dynamique de corrélation stable.")
+
+                st.markdown("**Matrice de corrélation conditionnelle moyenne :**")
+                st.dataframe(
+                    dm["R_moyenne"].style.format("{:.3f}").background_gradient(
+                        cmap="RdBu_r", vmin=-1, vmax=1),
+                    width="stretch",
+                )
+
+                # indice d'intégration des marchés dans le temps
+                integ = dm["corr_moyenne_t"]
+                fig, ax = plt.subplots(figsize=(10, 3.4))
+                ax.plot(integ.index, integ.values, color=BLEU, lw=1.2,
+                        label="Corrélation moyenne entre tous les couples")
+                ax.axhline(dm["corr_moyenne"], color="0.5", ls="--", lw=1,
+                           label=f"moyenne = {dm['corr_moyenne']:.2f}")
+                ax.set_title("Indice d'intégration des marchés (DCC multivarié)")
+                ax.set_ylabel("ρ moyen"); ax.legend(loc="upper left", fontsize=8)
+                st.pyplot(fig)
+                st.caption(
+                    "Quand cette courbe monte, les marchés bougent **plus ensemble** "
+                    "(intégration / contagion) ; quand elle baisse, ils se **diversifient**."
+                )
+
+                # corrélation conditionnelle d'un couple précis
+                paires = dm["paires"]
+                if paires:
+                    labels = [f"{i} ↔ {j}" for (i, j) in paires]
+                    choix_lbl = st.selectbox("Voir la corrélation d'un couple précis",
+                                             labels, key="dccm_pair")
+                    i_sel, j_sel = paires[labels.index(choix_lbl)]
+                    sc = dm["rho_pairs"][(i_sel, j_sel)]
+                    fig, ax = plt.subplots(figsize=(10, 3.2))
+                    ax.plot(sc.index, sc.values, color=ROUGE, lw=1.1,
+                            label=f"ρₜ {i_sel} ↔ {j_sel}")
+                    ax.axhline(float(sc.mean()), color="0.5", ls="--", lw=1,
+                               label=f"moyenne = {sc.mean():.2f}")
+                    ax.set_title(f"Corrélation conditionnelle : {choix_lbl}")
+                    ax.legend(loc="upper left", fontsize=8)
+                    st.pyplot(fig)
+
+                telecharger_df(
+                    dm["rho_pairs_df"],
+                    "⬇️ Télécharger les corrélations par couple (Excel)",
+                    "dcc_multivarie.xlsx",
+                )
+
 # ----------------------------------------------------------------------
 # Onglet 7 — Spillover de volatilité (Diebold-Yilmaz)
 # ----------------------------------------------------------------------

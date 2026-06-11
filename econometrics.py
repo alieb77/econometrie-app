@@ -451,6 +451,154 @@ def dcc_garch_bivariate(
     }
 
 
+def dcc_garch_multivariate(
+    series_list,
+    noms=None,
+    p: int = 1,
+    q: int = 1,
+    o: int = 0,
+    dist: str = "t",
+    vol: str = "GARCH",
+) -> dict:
+    """Modèle DCC-GARCH multivarié d'Engle (2002) pour N séries (N ≥ 2).
+
+    Généralisation matricielle de la version bivariée :
+        Qₜ = (1 − a − b)·Q̄ + a·(zₜ₋₁ zₜ₋₁') + b·Qₜ₋₁
+        Rₜ = diag(Qₜ)^(−½) · Qₜ · diag(Qₜ)^(−½)
+    où zₜ est le vecteur des résidus standardisés des N marges GARCH, et
+    Rₜ est la matrice N×N de corrélation conditionnelle. Les paramètres
+    scalaires (a, b) sont communs à toutes les paires (DCC « scalaire »).
+
+    On renvoie la matrice de corrélation moyenne, l'indice d'intégration
+    (corrélation moyenne entre tous les couples, semaine par semaine) et
+    la corrélation conditionnelle de chaque couple.
+    """
+    from scipy.optimize import minimize
+
+    # --- alignement des séries sur les mêmes dates ----------------------
+    if noms is None:
+        noms = [s.name if s.name is not None else f"S{i+1}"
+                for i, s in enumerate(series_list)]
+    noms = list(noms)
+    df = pd.concat([s.rename(n) for s, n in zip(series_list, noms)], axis=1).dropna()
+    N = df.shape[1]
+    if N < 2:
+        raise ValueError("Au moins deux séries sont nécessaires pour le DCC.")
+
+    # --- étape 1 : un GARCH univarié par série --------------------------
+    garchs, zcols, sigmas = {}, [], {}
+    for c in noms:
+        g = garch_fit(df[c], p=p, q=q, o=o, dist=dist, vol=vol)
+        garchs[c] = g
+        zcols.append(g["std_resid"].rename(c))
+        sigmas[c] = g["conditional_volatility"]
+    Z = pd.concat(zcols, axis=1).dropna()
+    z = Z.values
+    T = z.shape[0]
+    if T < 30:
+        raise ValueError("Trop peu d'observations communes pour estimer le DCC (min. 30).")
+
+    Qbar = np.cov(z, rowvar=False)            # matrice N×N inconditionnelle
+
+    def neg_loglik(params):
+        a, b = params
+        if a <= 0 or b <= 0 or a + b >= 0.9999:
+            return 1e12
+        Q = Qbar.copy()
+        ll = 0.0
+        for t in range(T):
+            if t > 0:
+                zz = np.outer(z[t - 1], z[t - 1])
+                Q = Qbar * (1 - a - b) + a * zz + b * Q
+            d = np.sqrt(np.diag(Q))
+            R = Q / np.outer(d, d)
+            sign, logdet = np.linalg.slogdet(R)
+            if sign <= 0 or not np.isfinite(logdet):
+                return 1e12
+            try:
+                sol = np.linalg.solve(R, z[t])
+            except np.linalg.LinAlgError:
+                return 1e12
+            ll += -0.5 * (logdet + float(z[t] @ sol))
+        return -ll if np.isfinite(ll) else 1e12
+
+    res = minimize(neg_loglik, x0=[0.02, 0.95], method="Nelder-Mead",
+                   options={"xatol": 1e-6, "fatol": 1e-6, "maxiter": 2000})
+    a_hat, b_hat = float(res.x[0]), float(res.x[1])
+    loglik = float(-res.fun)
+
+    # --- écarts-types numériques (Hessienne par différences finies) -----
+    se_a = se_b = p_a = p_b = None
+    try:
+        def hessienne(f, x, eps=1e-4):
+            n = len(x); H = np.zeros((n, n))
+            for i in range(n):
+                for j in range(n):
+                    xpp = x.copy(); xpp[i] += eps; xpp[j] += eps
+                    xpm = x.copy(); xpm[i] += eps; xpm[j] -= eps
+                    xmp = x.copy(); xmp[i] -= eps; xmp[j] += eps
+                    xmm = x.copy(); xmm[i] -= eps; xmm[j] -= eps
+                    H[i, j] = (f(xpp) - f(xpm) - f(xmp) + f(xmm)) / (4 * eps ** 2)
+            return H
+        H = hessienne(neg_loglik, np.array([a_hat, b_hat]))
+        cov = np.linalg.inv(H)
+        se_a, se_b = float(np.sqrt(abs(cov[0, 0]))), float(np.sqrt(abs(cov[1, 1])))
+        p_a = float(2 * (1 - stats.norm.cdf(abs(a_hat / se_a))))
+        p_b = float(2 * (1 - stats.norm.cdf(abs(b_hat / se_b))))
+    except Exception:
+        pass
+
+    # --- reconstruction des matrices Rₜ avec (â, b̂) --------------------
+    R_all = np.empty((T, N, N))
+    Q = Qbar.copy()
+    for t in range(T):
+        if t > 0:
+            zz = np.outer(z[t - 1], z[t - 1])
+            Q = Qbar * (1 - a_hat - b_hat) + a_hat * zz + b_hat * Q
+        d = np.sqrt(np.diag(Q))
+        R_all[t] = np.clip(Q / np.outer(d, d), -0.9999, 0.9999)
+
+    iu = np.triu_indices(N, k=1)              # couples (i < j)
+    paires = [(noms[i], noms[j]) for i, j in zip(*iu)]
+    rho_pairs = {
+        (noms[i], noms[j]): pd.Series(R_all[:, i, j], index=Z.index,
+                                      name=f"{noms[i]}-{noms[j]}")
+        for i, j in zip(*iu)
+    }
+    rho_pairs_df = pd.DataFrame(
+        {f"{i} | {j}": s.values for (i, j), s in rho_pairs.items()}, index=Z.index
+    )
+    corr_moyenne_t = pd.Series(R_all[:, iu[0], iu[1]].mean(axis=1),
+                               index=Z.index, name="corr_moyenne")
+    R_moyenne = pd.DataFrame(R_all.mean(axis=0), index=noms, columns=noms)
+    R_finale = pd.DataFrame(R_all[-1], index=noms, columns=noms)
+    R_uncond = pd.DataFrame(Qbar / np.outer(np.sqrt(np.diag(Qbar)),
+                                            np.sqrt(np.diag(Qbar))),
+                            index=noms, columns=noms)
+    sigma_df = pd.DataFrame(sigmas).reindex(Z.index)
+
+    return {
+        "a": a_hat, "b": b_hat,
+        "a_se": se_a, "b_se": se_b, "a_p": p_a, "b_p": p_b,
+        "persistance": a_hat + b_hat,
+        "loglik": loglik,
+        "convergence": bool(res.success),
+        "noms": noms,
+        "paires": paires,
+        "rho_pairs": rho_pairs,
+        "rho_pairs_df": rho_pairs_df,
+        "corr_moyenne_t": corr_moyenne_t,
+        "corr_moyenne": float(corr_moyenne_t.mean()),
+        "R_moyenne": R_moyenne,
+        "R_finale": R_finale,
+        "R_inconditionnelle": R_uncond,
+        "sigma": sigma_df,
+        "garchs": garchs,
+        "n_obs": T,
+        "spec": f"DCC({p},{q}) multivarié — {N} séries, GARCH {vol} marges, loi {dist}",
+    }
+
+
 # ======================================================================
 # 8. Spillover de volatilité — Diebold & Yilmaz (2012)
 # ======================================================================
