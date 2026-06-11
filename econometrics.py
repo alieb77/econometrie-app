@@ -648,7 +648,7 @@ def diebold_yilmaz(vol_df: pd.DataFrame, lags: int = 2, horizon: int = 10) -> di
     table = pd.DataFrame(theta_tilde * 100.0, index=cols, columns=cols)
     table["FROM (reçu)"] = from_others
     ligne_to = pd.Series(to_others, index=cols)
-    ligne_to["FROM (reçu)"] = np.nan
+    ligne_to["FROM (reçu)"] = total      # case d'angle = indice total (convention DY)
     table.loc["TO (émis)"] = ligne_to
 
     return {

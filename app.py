@@ -1160,7 +1160,8 @@ with onglets[7]:
                     .background_gradient(cmap="Oranges", axis=None),
                     width="stretch",
                 )
-                st.caption("Diagonale = part de volatilité « propre » ; hors-diagonale = spillovers.")
+                st.caption("Diagonale = part de volatilité « propre » ; hors-diagonale = spillovers ; "
+                           "case en bas à droite = indice total du système.")
 
                 # Spillover net directionnel
                 st.markdown("**Spillover net** (émis − reçu) : positif = émetteur, négatif = récepteur.")
