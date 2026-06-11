@@ -1164,64 +1164,144 @@ with onglets[8]:
         "le **gain de diversification** et fournit un **ratio de couverture** dynamique."
     )
     d = st.session_state.get("dcc_resultat")
-    if d is None:
+    dm = st.session_state.get("dccm_resultat")
+
+    sources = []
+    if d is not None:
+        sources.append("Bivarié (2 actifs)")
+    if dm is not None:
+        sources.append("Multivarié (N actifs)")
+
+    if not sources:
         st.warning(
-            "Estimez d'abord un **DCC-GARCH bivarié** (onglet 6). Le portefeuille se "
-            "construit sur la paire de séries de ce modèle."
+            "Estimez d'abord un **DCC-GARCH** (onglet 6) — **bivarié** ou **multivarié**. "
+            "Le portefeuille se construit sur les séries de ce modèle."
         )
     else:
-        p1, p2 = st.session_state.get("dcc_paire", (series_cols[0], series_cols[1]))
-        st.caption(f"Paire issue du DCC : **{p1}** et **{p2}** — {d['n_obs']} semaines.")
-        long_only = st.checkbox("Interdire la vente à découvert (poids entre 0 et 100 %)",
+        if len(sources) > 1:
+            choix_src = st.radio("Construire le portefeuille à partir du DCC :",
+                                 sources, horizontal=True, key="pf_src")
+        else:
+            choix_src = sources[0]
+            st.caption(f"Source : **{choix_src}** (le seul DCC estimé pour l'instant).")
+        long_only = st.checkbox("Interdire la vente à découvert (poids ≥ 0)",
                                 value=True, key="pf_longonly")
-        try:
-            pf = ec.dcc_min_variance_portfolio(
-                d, returns[p1], returns[p2], allow_short=not long_only,
-            )
-            m1, m2, m3 = st.columns(3)
-            m1.metric(f"Poids moyen {p1}", f"{pf['poids_moyen_a']*100:.0f} %")
-            m2.metric(f"Poids moyen {p2}", f"{pf['poids_moyen_b']*100:.0f} %")
-            m3.metric("Ratio de couverture moyen", f"{pf['hedge_ratio_moyen']:.3f}",
-                      help=f"Couvrir {p1} par {p2} : β = Cov/Var({p2}).")
 
-            st.markdown("**Volatilité annualisée des stratégies :**")
-            st.dataframe(
-                pf["resume"].style.format("{:.2f}")
-                .background_gradient(cmap="RdYlGn_r", subset=["Volatilité annualisée (%)"]),
-                width="stretch",
-            )
-            r_a = pf["reduction_vs_a"] * 100
-            r_b = pf["reduction_vs_5050"] * 100
-            st.success(
-                f"💡 Le portefeuille min-variance réduit la variance de **{r_a:.0f} %** "
-                f"par rapport à un placement 100 % {p1}, et de **{r_b:.0f} %** "
-                f"par rapport à un 50/50. C'est la **prime de diversification** chiffrée."
-            )
+        # ==============================================================
+        # Cas A — portefeuille bivarié (2 actifs)
+        # ==============================================================
+        if choix_src.startswith("Bivarié"):
+            p1, p2 = st.session_state.get("dcc_paire", (series_cols[0], series_cols[1]))
+            st.caption(f"Paire issue du DCC : **{p1}** et **{p2}** — {d['n_obs']} semaines.")
+            try:
+                pf = ec.dcc_min_variance_portfolio(
+                    d, returns[p1], returns[p2], allow_short=not long_only,
+                )
+                m1, m2, m3 = st.columns(3)
+                m1.metric(f"Poids moyen {p1}", f"{pf['poids_moyen_a']*100:.0f} %")
+                m2.metric(f"Poids moyen {p2}", f"{pf['poids_moyen_b']*100:.0f} %")
+                m3.metric("Ratio de couverture moyen", f"{pf['hedge_ratio_moyen']:.3f}",
+                          help=f"Couvrir {p1} par {p2} : β = Cov/Var({p2}).")
 
-            s = pf["series"]
-            # poids dans le temps
-            fig, ax = plt.subplots(figsize=(10, 3.2))
-            ax.plot(s.index, s[f"Poids {p1}"] * 100, color=BLEU, lw=1, label=p1)
-            ax.plot(s.index, s[f"Poids {p2}"] * 100, color=ORANGE, lw=1, label=p2)
-            ax.axhline(0, color="0.6", lw=0.6); ax.axhline(100, color="0.6", lw=0.6)
-            ax.set_ylabel("Poids (%)"); ax.set_title("Poids optimaux dans le temps")
-            ax.legend(loc="upper left", fontsize=8)
-            st.pyplot(fig)
+                st.markdown("**Volatilité annualisée des stratégies :**")
+                st.dataframe(
+                    pf["resume"].style.format("{:.2f}")
+                    .background_gradient(cmap="RdYlGn_r", subset=["Volatilité annualisée (%)"]),
+                    width="stretch",
+                )
+                r_a = pf["reduction_vs_a"] * 100
+                r_b = pf["reduction_vs_5050"] * 100
+                st.success(
+                    f"💡 Le portefeuille min-variance réduit la variance de **{r_a:.0f} %** "
+                    f"par rapport à un placement 100 % {p1}, et de **{r_b:.0f} %** "
+                    f"par rapport à un 50/50. C'est la **prime de diversification** chiffrée."
+                )
 
-            # volatilité comparée
-            fig, ax = plt.subplots(figsize=(10, 3.2))
-            ax.plot(s.index, s[f"Vol. {p1}"], color="0.6", lw=0.7, label=f"100 % {p1}")
-            ax.plot(s.index, s[f"Vol. {p2}"], color="0.4", lw=0.7, label=f"100 % {p2}")
-            ax.plot(s.index, s["Vol. min-variance"], color=ROUGE, lw=1.4, label="Min-variance (DCC)")
-            ax.set_ylabel("Volatilité conditionnelle (%/sem.)")
-            ax.set_title("Volatilité : portefeuille optimal vs actifs seuls")
-            ax.legend(loc="upper left", fontsize=8)
-            st.pyplot(fig)
+                s = pf["series"]
+                fig, ax = plt.subplots(figsize=(10, 3.2))
+                ax.plot(s.index, s[f"Poids {p1}"] * 100, color=BLEU, lw=1, label=p1)
+                ax.plot(s.index, s[f"Poids {p2}"] * 100, color=ORANGE, lw=1, label=p2)
+                ax.axhline(0, color="0.6", lw=0.6); ax.axhline(100, color="0.6", lw=0.6)
+                ax.set_ylabel("Poids (%)"); ax.set_title("Poids optimaux dans le temps")
+                ax.legend(loc="upper left", fontsize=8)
+                st.pyplot(fig)
 
-            telecharger_df(s, "⬇️ Télécharger les poids et volatilités (Excel)",
-                           f"portefeuille_{p1}_{p2}.xlsx")
-        except Exception as e:
-            st.error(f"Erreur : {e}")
+                fig, ax = plt.subplots(figsize=(10, 3.2))
+                ax.plot(s.index, s[f"Vol. {p1}"], color="0.6", lw=0.7, label=f"100 % {p1}")
+                ax.plot(s.index, s[f"Vol. {p2}"], color="0.4", lw=0.7, label=f"100 % {p2}")
+                ax.plot(s.index, s["Vol. min-variance"], color=ROUGE, lw=1.4, label="Min-variance (DCC)")
+                ax.set_ylabel("Volatilité conditionnelle (%/sem.)")
+                ax.set_title("Volatilité : portefeuille optimal vs actifs seuls")
+                ax.legend(loc="upper left", fontsize=8)
+                st.pyplot(fig)
+
+                telecharger_df(s, "⬇️ Télécharger les poids et volatilités (Excel)",
+                               f"portefeuille_{p1}_{p2}.xlsx")
+            except Exception as e:
+                st.error(f"Erreur : {e}")
+
+        # ==============================================================
+        # Cas B — portefeuille multivarié (N actifs)
+        # ==============================================================
+        else:
+            noms_pf = list(dm["noms"])
+            st.caption(f"Actifs issus du DCC multivarié : **{', '.join(noms_pf)}** "
+                       f"— {dm['n_obs']} semaines.")
+            try:
+                pf = ec.dcc_min_variance_portfolio_mv(
+                    dm, returns, allow_short=not long_only,
+                )
+
+                # poids moyens (tableau, car N peut être grand)
+                st.markdown("**Poids moyens du portefeuille optimal :**")
+                pm = pd.DataFrame(
+                    {"Poids moyen (%)": [pf["poids_moyens"][n] * 100 for n in noms_pf]},
+                    index=noms_pf,
+                )
+                st.dataframe(pm.style.format("{:.1f}"), width="stretch")
+
+                st.markdown("**Volatilité annualisée des stratégies :**")
+                st.dataframe(
+                    pf["resume"].style.format("{:.2f}")
+                    .background_gradient(cmap="RdYlGn_r", subset=["Volatilité annualisée (%)"]),
+                    width="stretch",
+                )
+                r_eq = pf["reduction_vs_eq"] * 100
+                meilleur = min(pf["reduction_vs_asset"], key=pf["reduction_vs_asset"].get)
+                r_best = pf["reduction_vs_asset"][meilleur] * 100
+                st.success(
+                    f"💡 Le portefeuille min-variance à {len(noms_pf)} actifs réduit la variance "
+                    f"de **{r_eq:.0f} %** par rapport à un équipondéré (1/N), et de "
+                    f"**{r_best:.0f} %** par rapport à l'actif le moins risqué ({meilleur}). "
+                    f"C'est la **prime de diversification** chiffrée."
+                )
+
+                s = pf["series"]
+                # poids dans le temps (une courbe par actif)
+                fig, ax = plt.subplots(figsize=(10, 3.4))
+                couleurs = plt.cm.tab10(np.linspace(0, 1, len(noms_pf)))
+                for n, col in zip(noms_pf, couleurs):
+                    ax.plot(s.index, s[f"Poids {n}"] * 100, lw=1, color=col, label=n)
+                ax.axhline(0, color="0.6", lw=0.6); ax.axhline(100, color="0.6", lw=0.6)
+                ax.set_ylabel("Poids (%)"); ax.set_title("Poids optimaux dans le temps")
+                ax.legend(loc="upper left", fontsize=8, ncol=min(len(noms_pf), 4))
+                st.pyplot(fig)
+
+                # volatilité : min-variance vs équipondéré
+                fig, ax = plt.subplots(figsize=(10, 3.2))
+                ax.plot(s.index, s["Vol. équipondéré"], color="0.5", lw=0.9,
+                        label="Équipondéré (1/N)")
+                ax.plot(s.index, s["Vol. min-variance"], color=ROUGE, lw=1.4,
+                        label="Min-variance (DCC)")
+                ax.set_ylabel("Volatilité conditionnelle (%/sem.)")
+                ax.set_title("Volatilité : portefeuille optimal vs équipondéré")
+                ax.legend(loc="upper left", fontsize=8)
+                st.pyplot(fig)
+
+                telecharger_df(s, "⬇️ Télécharger les poids et volatilités (Excel)",
+                               "portefeuille_multivarie.xlsx")
+            except Exception as e:
+                st.error(f"Erreur : {e}")
 
 # ----------------------------------------------------------------------
 # Onglet 9 — Méthodologie

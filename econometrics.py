@@ -749,3 +749,98 @@ def dcc_min_variance_portfolio(
         "allow_short": allow_short,
         "rendements_portefeuille": rp,
     }
+
+
+def dcc_min_variance_portfolio_mv(
+    dccm_result: dict, returns_df: pd.DataFrame,
+    allow_short: bool = True, periods_per_year: int = 52,
+) -> dict:
+    """Portefeuille à variance minimale à N actifs à partir d'un DCC multivarié.
+
+    À chaque date on reconstruit la covariance conditionnelle Hₜ = Dₜ Rₜ Dₜ
+    (Dₜ = volatilités GARCH, Rₜ = corrélations conditionnelles par couple), puis
+        wₜ = Hₜ⁻¹ 𝟙 / (𝟙' Hₜ⁻¹ 𝟙).
+    On compare au portefeuille **équipondéré (1/N)** et à chaque actif seul.
+    """
+    noms = list(dccm_result["noms"])
+    N = len(noms)
+    sigma = dccm_result["sigma"][noms].dropna()        # T×N, volatilités GARCH
+    rho_pairs = dccm_result["rho_pairs"]
+
+    # index commun aux volatilités et à toutes les corrélations
+    idx = sigma.index
+    for s in rho_pairs.values():
+        idx = idx.intersection(s.index)
+    sigma = sigma.reindex(idx)
+    T = len(idx)
+    if T < 10:
+        raise ValueError("Trop peu d'observations communes pour le portefeuille.")
+
+    # matrices de corrélations empilées (T×N×N) à partir des couples
+    Rmat = np.repeat(np.eye(N)[None, :, :], T, axis=0)
+    for i in range(N):
+        for j in range(i + 1, N):
+            rij = rho_pairs[(noms[i], noms[j])].reindex(idx).values
+            Rmat[:, i, j] = rij
+            Rmat[:, j, i] = rij
+
+    ones = np.ones(N)
+    W = np.empty((T, N))
+    port_vol = np.empty(T)
+    eq_vol = np.empty(T)
+    D = sigma.values
+    weq = ones / N
+    for k in range(T):
+        d_k = D[k]
+        H = (d_k[:, None] * d_k[None, :]) * Rmat[k]     # Dₜ Rₜ Dₜ
+        try:
+            hinv1 = np.linalg.solve(H, ones)
+        except np.linalg.LinAlgError:
+            hinv1 = np.linalg.pinv(H) @ ones
+        w = hinv1 / (ones @ hinv1)
+        if not allow_short:
+            w = np.clip(w, 0.0, None)
+            s = w.sum()
+            w = w / s if s > 0 else weq.copy()
+        W[k] = w
+        port_vol[k] = float(np.sqrt(max(w @ H @ w, 0.0)))
+        eq_vol[k] = float(np.sqrt(max(weq @ H @ weq, 0.0)))
+
+    Rret = returns_df[noms].reindex(idx)
+
+    # rendements réalisés sans anticipation : poids en t-1 × rendements en t
+    Wdf = pd.DataFrame(W, index=idx, columns=noms)
+    rp = (Wdf.shift(1) * Rret).sum(axis=1).iloc[1:]
+    r_eq = Rret.mean(axis=1).reindex(rp.index)
+    ann = np.sqrt(periods_per_year)
+
+    def vol_ann(x):
+        return float(x.std(ddof=1) * ann)
+
+    var_minvar = rp.var(ddof=1)
+    reduction_vs_eq = float(1.0 - var_minvar / r_eq.var(ddof=1))
+    reduction_vs_asset = {
+        n: float(1.0 - var_minvar / Rret[n].reindex(rp.index).var(ddof=1)) for n in noms
+    }
+
+    rows = {"Min-variance (DCC)": vol_ann(rp), "Équipondéré (1/N)": vol_ann(r_eq)}
+    for n in noms:
+        rows[f"100 % {n}"] = vol_ann(Rret[n].reindex(rp.index))
+    resume = pd.DataFrame({"Volatilité annualisée (%)": list(rows.values())},
+                          index=list(rows.keys()))
+
+    series = Wdf.rename(columns={n: f"Poids {n}" for n in noms}).copy()
+    series["Vol. min-variance"] = port_vol
+    series["Vol. équipondéré"] = eq_vol
+
+    return {
+        "noms": noms,
+        "series": series,
+        "resume": resume,
+        "poids_moyens": {n: float(W[:, i].mean()) for i, n in enumerate(noms)},
+        "reduction_vs_eq": reduction_vs_eq,
+        "reduction_vs_asset": reduction_vs_asset,
+        "rendements_portefeuille": rp,
+        "allow_short": allow_short,
+        "n_obs": T,
+    }
