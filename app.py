@@ -1302,6 +1302,19 @@ R_t = \mathrm{diag}(Q_t)^{-1/2}\,Q_t\,\mathrm{diag}(Q_t)^{-1/2}.$$
 > Les **écarts-types** viennent d'une **Hessienne numérique** (différences finies), donc
 > approximatifs. Sortie : la série $\rho_t$ + moyennes par sous-période.
 
+#### 6 bis. DCC-GARCH multivarié ($N$ séries)
+Même modèle, généralisé à $N$ marchés : $Q_t$ et $R_t$ sont des **matrices $N\times N$**, et
+les scalaires $(a,b)$ sont **communs à toutes les paires** (DCC « scalaire » d'Engle). On résume
+la dynamique par l'**indice d'intégration** $\bar\rho_t = \frac{2}{N(N-1)}\sum_{i<j} R_t[i,j]$
+(corrélation moyenne entre tous les couples, semaine par semaine).
+> **Réalisation (`dcc_garch_multivariate`, maison) :** (1) un **GARCH univarié par série**
+> (package `arch`) donne le vecteur des résidus standardisés $z_t$ ; (2) $\bar Q = \mathrm{cov}(z_t)$,
+> puis $(a,b)$ sont estimés par **maximum de vraisemblance gaussienne multivariée**
+> ($-\tfrac12\sum_t [\ln|R_t| + z_t' R_t^{-1} z_t]$, `scipy.optimize`, Nelder-Mead). À chaque date,
+> $\ln|R_t|$ et $z_t'R_t^{-1}z_t$ utilisent `numpy.linalg.slogdet` et `solve`. Écarts-types par
+> **Hessienne numérique**. Sorties : **matrice de corrélation moyenne** $\bar R$, indice
+> d'intégration $\bar\rho_t$, et la corrélation conditionnelle de **chaque couple** $(i,j)$.
+
 #### 7. Spillover de volatilité — Diebold & Yilmaz (2012)
 Décomposition **généralisée** (KPPS, invariante à l'ordre) de la variance d'erreur de prévision
 d'un VAR, à l'horizon $H$. $\tilde\theta_{ij}$ = part de la volatilité future de $i$ due à $j$.
@@ -1334,7 +1347,8 @@ pour deux actifs $w_{1,t} = \frac{\sigma_{2,t}^2 - \mathrm{cov}_t}{\sigma_{1,t}^
 | GARCH | `arch.arch_model` | max. de vraisemblance |
 | Granger | `statsmodels.grangercausalitytests` | test F sur VAR |
 | Forbes-Rigobon | `numpy` / `scipy` | corrélations + $z$ de Fisher |
-| DCC-GARCH | maison + `arch` + `scipy.optimize` | 2 étapes, MLE |
+| DCC-GARCH bivarié | maison + `arch` + `scipy.optimize` | 2 étapes, MLE |
+| DCC-GARCH multivarié | maison + `arch` + `scipy.optimize` | $R_t$ $N\times N$, MLE gaussienne |
 | Diebold-Yilmaz | `statsmodels.VAR` + maison | GFEVD généralisée |
 | Portefeuille | maison (`numpy`) | min-variance analytique |
         """
