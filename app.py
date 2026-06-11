@@ -1176,6 +1176,22 @@ with onglets[7]:
                     vol_df = calc_vol_matrix(returns[sel].dropna(), dy_dist_code)
                     dy = calc_dy(vol_df, dy_lags, dy_h)
 
+                # Garde-fou : un VAR estime k·(k·p+1) coefficients. Sur un
+                # échantillon court il est sur-paramétré → décomposition instable.
+                n_dy = vol_df.shape[0]
+                par_eq = len(sel) * dy_lags + 1
+                ratio_dy = n_dy / par_eq
+                if ratio_dy < 10:
+                    st.warning(
+                        f"⚠️ **Échantillon trop court pour un spillover fiable.** Le VAR estime "
+                        f"**{par_eq} coefficients par équation** à partir de seulement "
+                        f"**{n_dy} observations** (≈ {ratio_dy:.1f} obs/coefficient). En dessous "
+                        f"de ~10, la décomposition devient **très instable** : décaler la période "
+                        f"de quelques {unite_pl} peut faire varier les résultats du tout au tout. "
+                        f"→ Élargissez la **Plage d'étude**, réduisez le **nombre de séries**, "
+                        f"ou baissez les **retards du VAR**."
+                    )
+
                 st.metric("📊 Indice de spillover TOTAL",
                           f"{dy['total']:.1f} %",
                           help="Part de la variance du système expliquée par les transmissions "
