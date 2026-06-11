@@ -372,6 +372,29 @@ alpha_signif = st.sidebar.select_slider(
     "Seuil de significativité", options=[0.01, 0.05, 0.10], value=0.05
 )
 
+# Signature — monogramme sobre dans le coin de la barre latérale
+st.sidebar.markdown(
+    f"""
+    <div style="margin-top:1.4rem; padding-top:0.9rem;
+                border-top:1px solid rgba(128,128,128,0.25);
+                display:flex; align-items:center; gap:0.6rem; opacity:0.9;">
+      <div style="width:36px; height:36px; border-radius:9px;
+                  background:linear-gradient(135deg,{BLEU},#2c6ca3);
+                  display:flex; align-items:center; justify-content:center;
+                  color:#fff; font-family:Georgia,'Times New Roman',serif;
+                  font-weight:700; font-size:0.9rem; letter-spacing:1px;
+                  box-shadow:0 1px 4px rgba(0,0,0,0.28);">AE</div>
+      <div style="line-height:1.15;">
+        <div style="font-size:0.82rem; font-weight:600; letter-spacing:2px;
+                    color:#9aa0a6;">ALI&nbsp;EB</div>
+        <div style="font-size:0.64rem; letter-spacing:0.6px; color:#888;">
+            Conception &amp; développement</div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # ======================================================================
 # CORPS — onglets
@@ -1476,5 +1499,6 @@ with onglets[9]:
 st.divider()
 st.caption(
     "Application d'économétrie financière • ADF · ARCH-LM · GARCH · Granger · "
-    "Forbes-Rigobon · DCC-GARCH · Diebold-Yilmaz · Portefeuille • construite avec Streamlit."
+    "Forbes-Rigobon · DCC-GARCH · Diebold-Yilmaz · Portefeuille • construite avec Streamlit "
+    "• © Ali EB"
 )
