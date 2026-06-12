@@ -96,6 +96,24 @@ def noms_feuilles(contenu: bytes, nom: str):
     return pd.ExcelFile(io.BytesIO(contenu)).sheet_names
 
 
+def arrondir_pour_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Arrondit toute valeur numérique à 3 décimales pour l'export Excel ;
+    remplace par « ≈ 0 » ce qui s'afficherait 0,000 ou en notation scientifique
+    (ex. 2,3e-308). Les entiers, booléens et textes restent intacts."""
+    def fmt(v):
+        if isinstance(v, (bool, np.bool_)):
+            return bool(v)
+        if isinstance(v, (int, np.integer)):
+            return int(v)
+        if isinstance(v, (float, np.floating)):
+            if pd.isna(v):
+                return v
+            r = round(float(v), 3)
+            return "≈ 0" if abs(r) < 0.0005 else r
+        return v
+    return df.apply(lambda col: col.map(fmt))
+
+
 def telecharger_df(df: pd.DataFrame, label: str, fichier: str, key=None):
     # Export en vrai .xlsx : chaque variable dans sa propre colonne. Évite le
     # problème du CSV ouvert en colonne unique sous Excel français (séparateur
@@ -108,6 +126,7 @@ def telecharger_df(df: pd.DataFrame, label: str, fichier: str, key=None):
     if ecrire_index and df.index.name is None:        # évite l'en-tête « Unnamed: 0 »
         out = df.copy()
         out.index.name = "Élément"
+    out = arrondir_pour_excel(out)                    # max 3 décimales, « ≈ 0 » sinon
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         out.to_excel(writer, index=ecrire_index, sheet_name="Donnees")
@@ -133,6 +152,7 @@ def ecrire_rapport_xlsx(feuilles: dict) -> bytes:
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         for nom, df in feuilles.items():
             sname = str(nom)[:31]
+            df = arrondir_pour_excel(df)              # max 3 décimales, « ≈ 0 » sinon
             ecrire_index = not isinstance(df.index, pd.RangeIndex)
             df.to_excel(writer, sheet_name=sname, index=ecrire_index)
             ws = writer.sheets[sname]

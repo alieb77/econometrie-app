@@ -886,16 +886,20 @@ def rapport_complet(
         crise_txt = "non incluse"
     else:
         crise_txt = "—"
-    feuilles["Synthèse"] = pd.DataFrame({
-        "Information": [
-            "Série principale (pierre angulaire)", "Autres séries", "Fréquence",
-            "Période d'étude", "Observations (rendements)", "Fenêtre de crise (Forbes-Rigobon)",
-        ],
-        "Valeur": [
-            principal, " ; ".join(autres), freq_label, periode,
-            int(returns.dropna(how="all").shape[0]), crise_txt,
-        ],
-    })
+    infos = ["Série principale (pierre angulaire)", "Autres séries", "Fréquence",
+             "Période d'étude", "Observations (rendements)", "Fenêtre de crise (Forbes-Rigobon)"]
+    vals = [principal, " ; ".join(autres), freq_label, periode,
+            int(returns.dropna(how="all").shape[0]), crise_txt]
+    if inclure_fr:
+        infos.append("Lecture Forbes-Rigobon")
+        vals.append(
+            "« Source » = marché dont la hausse de volatilité sert d'étalon d'ajustement "
+            "(idéalement le marché d'origine du choc, le plus grand). Le test compare des "
+            "corrélations : il n'est PAS causal. À privilégier : le sens où le grand marché "
+            "est la source. Désigner le petit marché comme source applique peu de correction "
+            "et peut faire apparaître une fausse contagion."
+        )
+    feuilles["Synthèse"] = pd.DataFrame({"Information": infos, "Valeur": vals})
 
     # --- 1. Données & Rendements --------------------------------------
     blocs = {}
