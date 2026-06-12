@@ -776,6 +776,32 @@ with onglets[4]:
         elif st.button("▶️ Lancer le test de Granger", key="run_granger"):
             try:
                 res = ec.granger_bidirectional(returns[serie_a], returns[serie_b], maxlag=maxlag)
+
+                # Garde-fou désalignement : la corrélation croisée doit culminer à k = 0.
+                # Un pic à k ≠ 0 trahit des séries décalées dans le temps (mauvaise
+                # convention de date) → la causalité de Granger devient un artefact.
+                paire_g = returns[[serie_a, serie_b]].dropna()
+                corr0 = abs(paire_g[serie_a].corr(paire_g[serie_b]))
+                kbest, cbest = 0, corr0
+                for kk in range(-3, 4):
+                    if kk == 0:
+                        continue
+                    ck = abs(paire_g[serie_a].corr(paire_g[serie_b].shift(-kk)))
+                    if ck > cbest:
+                        kbest, cbest = kk, ck
+                if kbest != 0 and cbest >= corr0 + 0.02:
+                    avance, retard = (serie_a, serie_b) if kbest > 0 else (serie_b, serie_a)
+                    st.warning(
+                        f"⚠️ **Possible désalignement temporel des séries.** La corrélation croisée "
+                        f"entre **{serie_a}** et **{serie_b}** est plus forte avec un décalage de "
+                        f"**{kbest:+d} période(s)** (corr {cbest:.2f}) qu'en synchrone "
+                        f"(corr {corr0:.2f}). Autrement dit **{avance}** semble *en avance* de "
+                        f"{abs(kbest)} période(s) sur **{retard}**. Une causalité de Granger dans "
+                        f"ce sens peut alors être un **pur artefact**. Vérifiez que toutes vos "
+                        f"séries partagent la **même convention de date** (même jour de clôture, "
+                        f"aucun décalage appliqué lors de la préparation des données)."
+                    )
+
                 col1, col2 = st.columns(2)
                 for col, sens, key in [
                     (col1, f"{serie_a} → {serie_b}", "a_vers_b"),
