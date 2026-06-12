@@ -877,16 +877,27 @@ with onglets[5]:
                 m5.metric("Statistique z (ajustée)", f"{res['z_ajuste']:.3f}")
                 m6.metric("p-value (ajustée)", fmt_p(res["p_value_ajuste"]))
 
-                verdict(
-                    res["p_value_ajuste"] < alpha_signif,
-                    f"**CONTAGION** de **{serie_src}** vers **{serie_rcp}** "
-                    f"(p = {fmt_p(res['p_value_ajuste'])}). La corrélation augmente **au-delà** "
-                    f"de ce qu'explique la hausse de volatilité.",
-                    f"**PAS de contagion** ({serie_src} → {serie_rcp}, "
-                    f"p = {fmt_p(res['p_value_ajuste'])}). La hausse de corrélation s'explique "
-                    f"par la volatilité : **simple interdépendance** (« No Contagion, Only "
-                    f"Interdependence »).",
-                )
+                if res["delta_volatilite"] <= 0:
+                    st.warning(
+                        f"⚠️ **Test non valide dans ce sens : δ = {res['delta_volatilite']:.2f} ≤ 0.** "
+                        f"La volatilité de la source (**{serie_src}**) n'a **pas augmenté** pendant "
+                        f"la fenêtre de crise. Or Forbes-Rigobon suppose une **hausse** de la "
+                        f"volatilité de la source : avec δ ≤ 0 l'ajustement **gonfle** la corrélation "
+                        f"au lieu de la corriger, ce qui produit une **contagion factice**. "
+                        f"→ Inversez le sens (prenez **{serie_rcp}** comme source) ou choisissez une "
+                        f"fenêtre de crise où **{serie_src}** est réellement plus volatil."
+                    )
+                else:
+                    verdict(
+                        res["p_value_ajuste"] < alpha_signif,
+                        f"**CONTAGION** de **{serie_src}** vers **{serie_rcp}** "
+                        f"(p = {fmt_p(res['p_value_ajuste'])}). La corrélation augmente **au-delà** "
+                        f"de ce qu'explique la hausse de volatilité.",
+                        f"**PAS de contagion** ({serie_src} → {serie_rcp}, "
+                        f"p = {fmt_p(res['p_value_ajuste'])}). La hausse de corrélation s'explique "
+                        f"par la volatilité : **simple interdépendance** (« No Contagion, Only "
+                        f"Interdependence »).",
+                    )
 
                 # Comparaison test brut vs ajusté
                 st.markdown("**Effet de l'ajustement d'hétéroscédasticité :**")

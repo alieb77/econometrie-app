@@ -999,12 +999,16 @@ def rapport_complet(
                 try:
                     fr = forbes_rigobon_test(returns[src].rename(src),
                                              returns[rcp].rename(rcp), mask)
+                    delta = fr["delta_volatilite"]
+                    valide = delta > 0   # FR suppose une HAUSSE de volatilité de la source
                     lignes.append({
                         "Source (crise)": src, "Récepteur": rcp,
                         "ρ stable": fr["rho_stable"], "ρ crise (brut)": fr["rho_crisis_brut"],
-                        "ρ crise (ajusté)": fr["rho_crisis_ajuste"], "δ (volatilité)": fr["delta_volatilite"],
+                        "ρ crise (ajusté)": fr["rho_crisis_ajuste"], "δ (volatilité)": delta,
                         "z ajusté": fr["z_ajuste"], "p-value (ajusté)": fr["p_value_ajuste"],
-                        "Contagion (5 %)": fr["contagion_5pct"],
+                        "Contagion (5 %)": (fr["contagion_5pct"] if valide else "n/a (δ≤0)"),
+                        "Validité": ("OK" if valide
+                                     else "δ≤0 : volatilité source non accrue → sens NON valide"),
                         "n stable": fr["n_stable"], "n crise": fr["n_crisis"],
                     })
                 except Exception as e:
