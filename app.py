@@ -538,6 +538,25 @@ with onglets[0]:
     telecharger_df(desc, "⬇️ Télécharger les statistiques (Excel)",
                    "statistiques_descriptives.xlsx", key="dl_desc")
 
+    # --- Contrôle qualité : rendements figés (forward-fill / illiquidité) ---
+    # Une forte proportion de rendements exactement nuls trahit un remplissage
+    # par report de la dernière valeur (forward fill) ou une série illiquide :
+    # cela fabrique de fausses causalités de Granger et gonfle la contagion.
+    pct_zeros = {c: float((returns[c].abs() < 1e-9).mean() * 100) for c in series_cols}
+    suspects = {c: p for c, p in pct_zeros.items() if p >= 10}
+    if suspects:
+        details = " · ".join(f"**{c}** : {p:.0f} %" for c, p in
+                             sorted(suspects.items(), key=lambda x: -x[1]))
+        st.warning(
+            f"⚠️ **Rendements figés détectés** (valeurs identiques répétées) : {details}. "
+            "Au-delà de ~10 %, c'est souvent un **forward-fill** (trous comblés par la "
+            "dernière valeur) ou une **série peu liquide**. Conséquence : la **causalité de "
+            "Granger** et la **contagion (Forbes-Rigobon)** peuvent devenir des **artefacts** "
+            "(la série figée « rattrape » d'un coup et semble précéder les autres). "
+            "→ Repartez de données **réelles non remplies**, rééchantillonnées proprement "
+            "(une valeur par période, sans recopie), ou passez à une fréquence plus large."
+        )
+
     st.divider()
     st.subheader("Graphiques")
     serie_plot = st.selectbox("Série à visualiser", series_cols, key="plot_serie")
