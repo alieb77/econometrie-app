@@ -1487,26 +1487,79 @@ with onglets[9]:
         autres_rap = [c for c in series_cols if c != principale]
         st.caption(f"Comparée à : **{', '.join(autres_rap)}**.")
 
-        inclure_fr_rap = st.checkbox(
-            "Inclure le test de contagion Forbes-Rigobon (nécessite une fenêtre de crise)",
-            value=True, key="rap_fr",
-        )
-        crise_d = crise_f = None
-        if inclure_fr_rap:
-            if not index_dates:
-                st.info("Les dates ne sont pas reconnues : Forbes-Rigobon sera ignoré.")
-            else:
-                dmin_r = returns.index.min().date()
-                dmax_r = returns.index.max().date()
-                covid_d = max(dmin_r, pd.Timestamp("2020-02-19").date())
-                covid_f = min(dmax_r, pd.Timestamp("2020-06-30").date())
-                if covid_d >= covid_f:          # données hors COVID → plage complète
-                    covid_d, covid_f = dmin_r, dmax_r
-                cc1, cc2 = st.columns(2)
-                crise_d = cc1.date_input("Début de crise", value=covid_d,
-                                         min_value=dmin_r, max_value=dmax_r, key="rap_cd")
-                crise_f = cc2.date_input("Fin de crise", value=covid_f,
-                                         min_value=dmin_r, max_value=dmax_r, key="rap_cf")
+        st.markdown("#### Fenêtre(s) de crise pour Forbes-Rigobon")
+        crises_list = []
+        if not index_dates:
+            st.info("Les dates ne sont pas reconnues : Forbes-Rigobon sera ignoré dans le rapport.")
+        else:
+            dmin_r = returns.index.min().date()
+            dmax_r = returns.index.max().date()
+            EMOJI_CAT = {"Mondiale": "🔴", "Régionale": "🟠", "Maroc/MENA": "🟡", "Libre": "⚙️"}
+
+            def _n_obs_crise(deb, fin):
+                m = (returns.index >= pd.Timestamp(deb)) & (returns.index <= pd.Timestamp(fin))
+                return int(m.sum())
+
+            # crises disponibles = celles qui chevauchent les données (≥ 5 obs) + Personnalisée
+            dispo, masquees = [], []
+            for nom, c in ec.CRISIS_LIBRARY.items():
+                if nom == "Personnalisée":
+                    continue
+                if _n_obs_crise(c["start"], c["end"]) >= 5:
+                    dispo.append(nom)
+                else:
+                    masquees.append(nom)
+            options_cr = dispo + ["Personnalisée"]
+
+            def _fmt_crise(nom):
+                c = ec.CRISIS_LIBRARY[nom]
+                if c["start"] is None:
+                    return "⚙️ Personnalisée — dates libres"
+                em = EMOJI_CAT.get(c["cat"], "")
+                n = _n_obs_crise(c["start"], c["end"])
+                return f"{em} {nom} — {c['start']} → {c['end']} | {c['desc']} ({n} obs)"
+
+            defaut_cr = ["COVID-19"] if "COVID-19" in options_cr else options_cr[:1]
+            choix_crises = st.multiselect(
+                "Crises à tester (coche une ou plusieurs — chacune est analysée séparément)",
+                options_cr, default=defaut_cr, format_func=_fmt_crise, key="rap_crises",
+            )
+            if masquees:
+                st.caption(f"🔒 {len(masquees)} crise(s) masquée(s) car hors de la plage de "
+                           f"données chargée : {', '.join(masquees)}.")
+
+            for nom in choix_crises:
+                if nom == "Personnalisée":
+                    pcd = max(dmin_r, pd.Timestamp("2020-02-19").date())
+                    pcf = min(dmax_r, pd.Timestamp("2020-06-30").date())
+                    if pcd >= pcf:
+                        pcd, pcf = dmin_r, dmax_r
+                    cc1, cc2 = st.columns(2)
+                    d_perso = cc1.date_input("Début (personnalisée)", value=pcd,
+                                             min_value=dmin_r, max_value=dmax_r, key="rap_perso_d")
+                    f_perso = cc2.date_input("Fin (personnalisée)", value=pcf,
+                                             min_value=dmin_r, max_value=dmax_r, key="rap_perso_f")
+                    crises_list.append({"nom": "Personnalisée", "debut": d_perso, "fin": f_perso})
+                else:
+                    c = ec.CRISIS_LIBRARY[nom]
+                    deb = max(pd.Timestamp(c["start"]).date(), dmin_r)   # bornée aux données
+                    fin = min(pd.Timestamp(c["end"]).date(), dmax_r)
+                    crises_list.append({"nom": nom, "debut": deb, "fin": fin})
+
+            if crises_list:
+                recap = pd.DataFrame([{
+                    "Crise": cr["nom"], "Début": str(cr["debut"]), "Fin": str(cr["fin"]),
+                    "n obs (crise)": _n_obs_crise(cr["debut"], cr["fin"]),
+                } for cr in crises_list])
+                st.dataframe(recap, width="stretch", hide_index=True)
+                faibles = [cr["nom"] for cr in crises_list
+                           if _n_obs_crise(cr["debut"], cr["fin"]) < 10]
+                if faibles:
+                    st.warning(
+                        f"⚠️ Fenêtre(s) avec **moins de 10 observations** ({', '.join(faibles)}) : "
+                        "Forbes-Rigobon y sera **peu fiable** (et exige au minimum 5 points). "
+                        "Élargis la plage d'étude ou choisis une autre crise."
+                    )
 
         maxlag_rap = st.slider("Retards maximum (Granger)", 1, 8, 4, key="rap_lag")
         st.caption("Le rapport respecte la **Plage d'étude** et la **fréquence** "
@@ -1517,9 +1570,8 @@ with onglets[9]:
                 with st.spinner("Calcul de tous les tests (cela peut prendre ~30 s)…"):
                     feuilles = ec.rapport_complet(
                         returns, principale, prices=prices,
-                        crise_debut=crise_d, crise_fin=crise_f,
+                        crises=crises_list,
                         maxlag_granger=maxlag_rap,
-                        inclure_fr=inclure_fr_rap and index_dates,
                         freq_label=freq,
                     )
                     xlsx_bytes = ecrire_rapport_xlsx(feuilles)

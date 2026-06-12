@@ -847,19 +847,67 @@ def dcc_min_variance_portfolio_mv(
 
 
 # ======================================================================
-# 10. Rapport complet multi-feuilles (autour d'une série principale)
+# 10. Bibliothèque de crises financières (pour Forbes-Rigobon)
+# ======================================================================
+# cat : "Mondiale" (🔴), "Régionale" (🟠), "Maroc/MENA" (🟡).
+CRISIS_LIBRARY = {
+    # --- Crises majeures mondiales ---------------------------------------
+    "Crise Subprimes / GFC": {"start": "2007-06-01", "end": "2009-03-31",
+        "cat": "Mondiale", "desc": "Effondrement immobilier US, faillite Lehman Brothers"},
+    "Dette souveraine européenne": {"start": "2010-01-01", "end": "2012-12-31",
+        "cat": "Mondiale", "desc": "Crise Grèce / Portugal / Espagne / Irlande"},
+    "Mini-krach Chine": {"start": "2015-06-12", "end": "2016-02-29",
+        "cat": "Mondiale", "desc": "Effondrement bourse Shanghai, dévaluation yuan"},
+    "COVID-19": {"start": "2020-02-19", "end": "2020-06-30",
+        "cat": "Mondiale", "desc": "Pandémie mondiale, confinements globaux"},
+    "Choc inflationniste post-COVID": {"start": "2021-11-01", "end": "2022-12-31",
+        "cat": "Mondiale", "desc": "Inflation + ruptures chaînes d'approvisionnement"},
+    "Guerre Ukraine / choc énergétique": {"start": "2022-02-24", "end": "2023-03-31",
+        "cat": "Mondiale", "desc": "Invasion russe, embargo énergie, matières premières"},
+    "Crise bancaire US (SVB)": {"start": "2023-03-08", "end": "2023-05-31",
+        "cat": "Mondiale", "desc": "Faillites SVB, Signature Bank, First Republic"},
+    "Chocs tarifaires Trump 2.0": {"start": "2025-02-01", "end": "2025-06-30",
+        "cat": "Mondiale", "desc": "Tarifs douaniers massifs US, guerre commerciale"},
+    # --- Crises régionales / sectorielles --------------------------------
+    "Flash Crash": {"start": "2010-05-06", "end": "2010-05-20",
+        "cat": "Régionale", "desc": "Krach éclair US, test contagion court terme"},
+    "Taper Tantrum (Fed)": {"start": "2013-05-22", "end": "2013-09-30",
+        "cat": "Régionale", "desc": "Choc taux Fed, sorties de capitaux émergents"},
+    "Choc pétrolier": {"start": "2014-07-01", "end": "2016-01-31",
+        "cat": "Régionale", "desc": "Effondrement du pétrole (-70 %), pertinence Maroc/Afrique"},
+    "Brexit": {"start": "2016-06-23", "end": "2016-09-30",
+        "cat": "Régionale", "desc": "Choc politique européen post-référendum"},
+    "Tensions commerciales Trump 1.0": {"start": "2018-03-01", "end": "2019-01-31",
+        "cat": "Régionale", "desc": "Première guerre commerciale US-Chine"},
+    "Evergrande / immobilier chinois": {"start": "2021-09-01", "end": "2022-06-30",
+        "cat": "Régionale", "desc": "Risque systémique immobilier asiatique"},
+    "Crise Credit Suisse": {"start": "2023-03-14", "end": "2023-04-30",
+        "cat": "Régionale", "desc": "Contagion bancaire européenne"},
+    # --- Crises à impact Maroc / MENA ------------------------------------
+    "Printemps arabe": {"start": "2010-12-17", "end": "2012-06-30",
+        "cat": "Maroc/MENA", "desc": "Instabilité régionale MENA directe"},
+    "Sécheresse / choc céréales Maroc": {"start": "2022-01-01", "end": "2022-12-31",
+        "cat": "Maroc/MENA", "desc": "Inflation importée, sécheresse record"},
+    "Séisme Al Haouz": {"start": "2023-09-08", "end": "2023-12-31",
+        "cat": "Maroc/MENA", "desc": "Choc interne Maroc"},
+    # --- Fenêtre libre ---------------------------------------------------
+    "Personnalisée": {"start": None, "end": None,
+        "cat": "Libre", "desc": "Dates définies manuellement"},
+}
+
+
+# ======================================================================
+# 11. Rapport complet multi-feuilles (autour d'une série principale)
 # ======================================================================
 def rapport_complet(
     returns: pd.DataFrame,
     principal: str,
     prices: pd.DataFrame = None,
-    crise_debut=None,
-    crise_fin=None,
+    crises=None,
     maxlag_granger: int = 4,
     dcc_dist: str = "t",
     dcc_vol: str = "GARCH",
     dcc_o: int = 0,
-    inclure_fr: bool = True,
     arch_lags: int = 12,
     freq_label: str = "Hebdomadaire",
 ) -> dict:
@@ -877,17 +925,22 @@ def rapport_complet(
     est_date = isinstance(returns.index, pd.DatetimeIndex)
     feuilles = {}
 
+    crises = crises or []
+    inclure_fr = bool(crises) and est_date
+
     # --- 0. Synthèse ---------------------------------------------------
     periode = (f"{returns.index.min().date()} → {returns.index.max().date()}"
                if est_date else f"{len(returns)} points")
-    if inclure_fr and est_date and crise_debut is not None and crise_fin is not None:
-        crise_txt = f"{pd.Timestamp(crise_debut).date()} → {pd.Timestamp(crise_fin).date()}"
-    elif not inclure_fr:
+    if inclure_fr:
+        crise_txt = " ; ".join(
+            f"{c['nom']} ({pd.Timestamp(c['debut']).date()} → {pd.Timestamp(c['fin']).date()})"
+            for c in crises)
+    elif not crises:
         crise_txt = "non incluse"
     else:
-        crise_txt = "—"
+        crise_txt = "dates non reconnues"
     infos = ["Série principale (pierre angulaire)", "Autres séries", "Fréquence",
-             "Période d'étude", "Observations (rendements)", "Fenêtre de crise (Forbes-Rigobon)"]
+             "Période d'étude", "Observations (rendements)", "Fenêtre(s) de crise (Forbes-Rigobon)"]
     vals = [principal, " ; ".join(autres), freq_label, periode,
             int(returns.dropna(how="all").shape[0]), crise_txt]
     if inclure_fr:
@@ -987,33 +1040,36 @@ def rapport_complet(
                            "p-value (F)": f"erreur : {e}", "Significatif (5 %)": ""})
     feuilles["Causalité Granger"] = pd.DataFrame(lignes)
 
-    # --- 7. Forbes-Rigobon (les 2 sens) -------------------------------
-    if inclure_fr and est_date and crise_debut is not None and crise_fin is not None:
-        mask = pd.Series(
-            (returns.index >= pd.Timestamp(crise_debut)) & (returns.index <= pd.Timestamp(crise_fin)),
-            index=returns.index,
-        )
+    # --- 7. Forbes-Rigobon (chaque crise × les 2 sens) ----------------
+    if inclure_fr:
         lignes = []
-        for o in autres:
-            for src, rcp in [(principal, o), (o, principal)]:
-                try:
-                    fr = forbes_rigobon_test(returns[src].rename(src),
-                                             returns[rcp].rename(rcp), mask)
-                    delta = fr["delta_volatilite"]
-                    valide = delta > 0   # FR suppose une HAUSSE de volatilité de la source
-                    lignes.append({
-                        "Source (crise)": src, "Récepteur": rcp,
-                        "ρ stable": fr["rho_stable"], "ρ crise (brut)": fr["rho_crisis_brut"],
-                        "ρ crise (ajusté)": fr["rho_crisis_ajuste"], "δ (volatilité)": delta,
-                        "z ajusté": fr["z_ajuste"], "p-value (ajusté)": fr["p_value_ajuste"],
-                        "Contagion (5 %)": (fr["contagion_5pct"] if valide else "n/a (δ≤0)"),
-                        "Validité": ("OK" if valide
-                                     else "δ≤0 : volatilité source non accrue → sens NON valide"),
-                        "n stable": fr["n_stable"], "n crise": fr["n_crisis"],
-                    })
-                except Exception as e:
-                    lignes.append({"Source (crise)": src, "Récepteur": rcp,
-                                   "ρ stable": f"erreur : {e}"})
+        for cr in crises:
+            mask = pd.Series(
+                (returns.index >= pd.Timestamp(cr["debut"]))
+                & (returns.index <= pd.Timestamp(cr["fin"])),
+                index=returns.index,
+            )
+            for o in autres:
+                for src, rcp in [(principal, o), (o, principal)]:
+                    try:
+                        fr = forbes_rigobon_test(returns[src].rename(src),
+                                                 returns[rcp].rename(rcp), mask)
+                        delta = fr["delta_volatilite"]
+                        valide = delta > 0   # FR suppose une HAUSSE de volatilité de la source
+                        lignes.append({
+                            "Crise": cr["nom"],
+                            "Source (crise)": src, "Récepteur": rcp,
+                            "ρ stable": fr["rho_stable"], "ρ crise (brut)": fr["rho_crisis_brut"],
+                            "ρ crise (ajusté)": fr["rho_crisis_ajuste"], "δ (volatilité)": delta,
+                            "z ajusté": fr["z_ajuste"], "p-value (ajusté)": fr["p_value_ajuste"],
+                            "Contagion (5 %)": (fr["contagion_5pct"] if valide else "n/a (δ≤0)"),
+                            "Validité": ("OK" if valide
+                                         else "δ≤0 : volatilité source non accrue → sens NON valide"),
+                            "n stable": fr["n_stable"], "n crise": fr["n_crisis"],
+                        })
+                    except Exception as e:
+                        lignes.append({"Crise": cr["nom"], "Source (crise)": src,
+                                       "Récepteur": rcp, "ρ stable": f"erreur : {e}"})
         feuilles["Forbes-Rigobon"] = pd.DataFrame(lignes)
 
     return feuilles
