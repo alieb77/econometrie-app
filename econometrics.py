@@ -168,7 +168,18 @@ def garch_fit(
     alpha = float(sum(v for k, v in params.items() if k.startswith("alpha")))
     beta = float(sum(v for k, v in params.items() if k.startswith("beta")))
     gamma = float(sum(v for k, v in params.items() if k.startswith("gamma")))
-    persistence = alpha + beta + gamma / 2.0
+    # Persistance selon le type de modèle (la formule α+β+γ/2 n'est valable que
+    # pour GARCH / GJR-GARCH ; EGARCH est en log-variance → persistance = Σβ).
+    vol_u = str(vol).upper()
+    if vol_u == "EGARCH":
+        persistence = beta
+        persistence_exacte = True
+    elif vol_u in ("APARCH", "FIGARCH"):
+        persistence = alpha + beta + gamma / 2.0   # approximation (dépend de la loi)
+        persistence_exacte = False
+    else:                                          # GARCH, GJR-GARCH (o > 0)
+        persistence = alpha + beta + gamma / 2.0
+        persistence_exacte = True
 
     # Diagnostic sur les résidus standardisés : reste-t-il des effets ARCH ?
     resid_std = pd.Series(res.std_resid).dropna()
@@ -185,7 +196,9 @@ def garch_fit(
         "bic": float(res.bic),
         "alpha": alpha,
         "beta": beta,
+        "gamma": gamma,
         "persistence": float(persistence),
+        "persistence_exacte": bool(persistence_exacte),
         "conditional_volatility": pd.Series(res.conditional_volatility, name="vol_cond"),
         "std_resid": resid_std,
         "arch_residuals": arch_resid,
@@ -341,6 +354,7 @@ def dcc_garch_bivariate(
     o: int = 0,
     dist: str = "t",
     vol: str = "GARCH",
+    light: bool = False,
 ) -> dict:
     """Modèle DCC-GARCH bivarié d'Engle (2002), estimé en deux étapes.
 
@@ -400,7 +414,15 @@ def dcc_garch_bivariate(
     res = minimize(neg_loglik, x0=[0.02, 0.95], method="Nelder-Mead",
                    options={"xatol": 1e-6, "fatol": 1e-6, "maxiter": 2000})
     a_hat, b_hat = float(res.x[0]), float(res.x[1])
-    loglik = float(-res.fun)
+    # Log-vraisemblance de la COMPOSANTE CORRÉLATION (Engle 2002) : on ajoute le
+    # terme −zₜ'zₜ, de sorte que L = 0 quand Rₜ = I. Ce n'est PAS la log-vraisemblance
+    # du modèle complet (qui inclut les marges GARCH) — ne pas en tirer d'AIC/BIC.
+    loglik = float(-res.fun) + 0.5 * float(np.sum(z ** 2))
+
+    # Mode allégé (pour le bootstrap) : on ne renvoie que (a, b).
+    if light:
+        return {"a": a_hat, "b": b_hat, "convergence": bool(res.success),
+                "loglik": loglik, "n_obs": T}
 
     # --- écarts-types numériques (Hessienne par différences finies) -----
     se_a = se_b = p_a = p_b = None
@@ -448,6 +470,79 @@ def dcc_garch_bivariate(
         "nom_a": nom_a, "nom_b": nom_b,
         "n_obs": T,
         "spec": f"DCC({p},{q}) — GARCH {vol} marges, loi {dist}",
+    }
+
+
+def dcc_bootstrap_se(
+    a_series: pd.Series,
+    b_series: pd.Series,
+    n_boot: int = 200,
+    block: int | None = None,
+    seed: int = 42,
+    p: int = 1,
+    q: int = 1,
+    o: int = 0,
+    dist: str = "t",
+    vol: str = "GARCH",
+) -> dict:
+    """Écarts-types et IC à 95 % de (a, b) du DCC bivarié par **bootstrap par
+    blocs mobiles**.
+
+    Contrairement à la Hessienne de 2ᵉ étape, chaque réplication **ré-estime
+    tout le processus en deux étapes** (GARCH des marges PUIS corrélation) sur un
+    rééchantillon par blocs des rendements → ce bootstrap capture aussi
+    l'incertitude de la 1ʳᵉ étape (que la Hessienne ignore). Plus lent, mais
+    statistiquement défendable pour une publication.
+
+    block : longueur des blocs (défaut ≈ T^(1/3)) ; préserve la dépendance
+    temporelle (volatilité groupée) dans chaque rééchantillon.
+    """
+    rng = np.random.default_rng(seed)
+    df = pd.concat([a_series, b_series], axis=1).dropna()
+    nom_a = a_series.name if a_series.name is not None else "A"
+    nom_b = b_series.name if b_series.name is not None else "B"
+    df.columns = [nom_a, nom_b]
+    T = len(df)
+    if T < 40:
+        raise ValueError("Trop peu d'observations pour un bootstrap fiable (min. 40).")
+    if block is None:
+        block = max(10, int(round(T ** (1.0 / 3.0))))
+    block = min(block, T)
+    n_blocks = int(np.ceil(T / block))
+    vals = df.values
+
+    a_b, b_b = [], []
+    for _ in range(int(n_boot)):
+        starts = rng.integers(0, T - block + 1, size=n_blocks)
+        idx = np.concatenate([np.arange(s, s + block) for s in starts])[:T]
+        rs = vals[idx]
+        try:
+            d = dcc_garch_bivariate(
+                pd.Series(rs[:, 0], name=nom_a), pd.Series(rs[:, 1], name=nom_b),
+                p=p, q=q, o=o, dist=dist, vol=vol, light=True,
+            )
+            if np.isfinite(d["a"]) and np.isfinite(d["b"]) and (d["a"] + d["b"]) < 0.9999:
+                a_b.append(d["a"]); b_b.append(d["b"])
+        except Exception:
+            continue
+
+    a_b = np.asarray(a_b); b_b = np.asarray(b_b)
+    if len(a_b) < 20:
+        raise ValueError(f"Bootstrap non concluant ({len(a_b)} réplications valides).")
+
+    def ic(x):
+        return (float(np.percentile(x, 2.5)), float(np.percentile(x, 97.5)))
+
+    return {
+        "n_boot": int(n_boot),
+        "n_boot_valid": int(len(a_b)),
+        "block": int(block),
+        "a_se": float(a_b.std(ddof=1)),
+        "b_se": float(b_b.std(ddof=1)),
+        "a_ic95": ic(a_b),
+        "b_ic95": ic(b_b),
+        "a_moyenne": float(a_b.mean()),
+        "b_moyenne": float(b_b.mean()),
     }
 
 
@@ -525,7 +620,9 @@ def dcc_garch_multivariate(
     res = minimize(neg_loglik, x0=[0.02, 0.95], method="Nelder-Mead",
                    options={"xatol": 1e-6, "fatol": 1e-6, "maxiter": 2000})
     a_hat, b_hat = float(res.x[0]), float(res.x[1])
-    loglik = float(-res.fun)
+    # Composante corrélation (Engle 2002), terme −zₜ'zₜ ajouté ; pas la log-vraisemblance
+    # complète du modèle (marges GARCH exclues) — ne pas en tirer d'AIC/BIC.
+    loglik = float(-res.fun) + 0.5 * float(np.sum(z ** 2))
 
     # --- écarts-types numériques (Hessienne par différences finies) -----
     se_a = se_b = p_a = p_b = None

@@ -899,7 +899,11 @@ with onglets[3]:
             st.caption(f"Spécification estimée : **{g['spec']}**")
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Persistance (α+β)", f"{g['persistence']:.4f}")
+            _lab_pers = "Persistance (β)" if str(g["spec"]).upper().startswith("EGARCH") \
+                else "Persistance (α+β)"
+            m1.metric(_lab_pers, f"{g['persistence']:.4f}",
+                      help=None if g.get("persistence_exacte", True)
+                      else "Valeur approximative pour ce modèle (APARCH) — dépend de la loi.")
             m2.metric("Log-vraisemblance", f"{g['loglik']:.1f}")
             m3.metric("AIC", f"{g['aic']:.1f}")
             m4.metric("BIC", f"{g['bic']:.1f}")
@@ -927,14 +931,21 @@ with onglets[3]:
                            f"garch_{serie}.xlsx", key="dl_garch")
 
             # Persistance
-            if g["persistence"] >= 0.99:
+            _approx = "" if g.get("persistence_exacte", True) else " *(approximative pour APARCH)*"
+            if not (0 < g["persistence"] < 1):
                 st.warning(
-                    f"Persistance ≈ {g['persistence']:.3f} (très proche de 1) : chocs de "
+                    f"Persistance = {g['persistence']:.3f}{_approx} : hors de l'intervalle "
+                    "]0, 1[ — la demi-vie n'est pas définie (modèle non stationnaire en variance "
+                    "ou paramétrage atypique)."
+                )
+            elif g["persistence"] >= 0.99:
+                st.warning(
+                    f"Persistance ≈ {g['persistence']:.3f}{_approx} (très proche de 1) : chocs de "
                     "volatilité quasi permanents (proche d'un IGARCH)."
                 )
             else:
                 st.info(
-                    f"Persistance = {g['persistence']:.3f} : la demi-vie d'un choc de "
+                    f"Persistance = {g['persistence']:.3f}{_approx} : la demi-vie d'un choc de "
                     f"volatilité est d'environ "
                     f"{np.log(0.5)/np.log(g['persistence']):.1f} {unite_pl}."
                 )
@@ -1227,6 +1238,8 @@ with onglets[6]:
                         )
                     st.session_state["dcc_resultat"] = d
                     st.session_state["dcc_paire"] = (serie_1, serie_2)
+                    st.session_state["dcc_spec"] = (vol_dcc_code, loi_dcc_code, o_dcc)
+                    st.session_state.pop("dcc_bootstrap", None)   # invalide l'ancien bootstrap
                 except Exception as e:
                     st.session_state.pop("dcc_resultat", None)
                     st.error(f"Erreur : {e}")
@@ -1268,9 +1281,58 @@ with onglets[6]:
                     }, na_rep="—"),
                     width="stretch", hide_index=True,
                 )
-                st.caption("Écarts-types numériques (Hessienne par différences finies), donc approximatifs.")
+                st.caption("Écarts-types ci-dessus : Hessienne de **2ᵉ étape** — ils **ignorent** "
+                           "l'incertitude d'estimation des marges GARCH, donc **sous-estimés**. "
+                           "Pour une inférence publiable, utilisez le **bootstrap** ci-dessous.")
                 telecharger_df(tab_dcc, "⬇️ Télécharger les paramètres DCC (Excel)",
                                f"dcc_parametres_{p1}_{p2}.xlsx", key="dl_dccparam")
+
+                # --- Écarts-types par bootstrap (ré-estimation 2 étapes complète) ---
+                with st.expander("🎯 Écarts-types robustes par bootstrap (recommandé pour publication)"):
+                    st.markdown(
+                        "Ré-estime **tout le processus en deux étapes** (GARCH + corrélation) sur "
+                        "des rééchantillons par blocs → capture aussi l'incertitude des marges, "
+                        "que la Hessienne ignore. Plus lent (~1 réplication ≈ 0,2 s)."
+                    )
+                    nboot = st.slider("Nombre de réplications", 50, 500, 200, step=50, key="dcc_nboot")
+                    if st.button("▶️ Lancer le bootstrap", key="run_dcc_boot"):
+                        vol_b, dist_b, o_b = st.session_state.get("dcc_spec",
+                                                                  ("GARCH", "t", 0))
+                        try:
+                            with st.spinner(f"Bootstrap {nboot} réplications… (~{nboot*0.2:.0f} s)"):
+                                bs = ec.dcc_bootstrap_se(
+                                    returns[p1], returns[p2], n_boot=nboot,
+                                    vol=vol_b, dist=dist_b, o=o_b,
+                                )
+                            st.session_state["dcc_bootstrap"] = bs
+                        except Exception as e:
+                            st.session_state.pop("dcc_bootstrap", None)
+                            st.error(f"Bootstrap impossible : {e}")
+                    bs = st.session_state.get("dcc_bootstrap")
+                    if bs is not None:
+                        st.caption(f"{bs['n_boot_valid']}/{bs['n_boot']} réplications valides "
+                                   f"(blocs de {bs['block']} obs).")
+                        tab_bs = pd.DataFrame({
+                            "Paramètre": ["a (réaction)", "b (persistance)"],
+                            "Estimation": [d["a"], d["b"]],
+                            "SE Hessienne": [d["a_se"], d["b_se"]],
+                            "SE bootstrap": [bs["a_se"], bs["b_se"]],
+                            "IC 95 % (bootstrap)": [
+                                f"[{bs['a_ic95'][0]:.3f} ; {bs['a_ic95'][1]:.3f}]",
+                                f"[{bs['b_ic95'][0]:.3f} ; {bs['b_ic95'][1]:.3f}]",
+                            ],
+                        })
+                        st.dataframe(
+                            tab_bs.style.format({"Estimation": "{:.4f}", "SE Hessienne": "{:.4f}",
+                                                 "SE bootstrap": "{:.4f}"}, na_rep="—"),
+                            width="stretch", hide_index=True,
+                        )
+                        _r = (bs["b_se"] / d["b_se"]) if d["b_se"] else float("nan")
+                        st.info("💡 Si l'écart-type bootstrap est nettement plus grand que la "
+                                "Hessienne, c'est la preuve que cette dernière sous-estimait "
+                                "l'incertitude. **Reporte l'IC bootstrap dans l'article.**")
+                        telecharger_df(tab_bs, "⬇️ Télécharger (Excel)",
+                                       f"dcc_bootstrap_{p1}_{p2}.xlsx", key="dl_dccboot")
 
                 if d["persistance"] >= 0.999:
                     st.warning(
@@ -1292,7 +1354,9 @@ with onglets[6]:
                 s1.metric("ρ minimum", f"{d['rho_min']:.3f}")
                 s2.metric("ρ maximum", f"{d['rho_max']:.3f}")
                 s3.metric("ρ écart-type", f"{d['rho_ecart_type']:.3f}")
-                s4.metric("Log-vraisemblance (DCC)", f"{d['loglik']:.1f}")
+                s4.metric("Log-vrais. (corrélation)", f"{d['loglik']:.1f}",
+                          help="Composante corrélation (étape 2, Engle 2002), pas la "
+                               "log-vraisemblance du modèle complet — n'en tirez pas d'AIC/BIC.")
 
                 # Moyennes par sous-période (si dates disponibles)
                 if index_dates:
@@ -1898,9 +1962,11 @@ with onglets[10]:
         "> **Réalisation :** package `arch` (`arch_model`, `rescale=False`), estimé par **maximum "
         "de vraisemblance** (`fit`). Réglables : ordres p, q, équation de moyenne (constante / "
         "zéro / AR), type (GARCH, EGARCH, GJR-GARCH) et **loi des innovations** (normale, "
-        "**Student** par défaut, Student asymétrique, GED). La persistance vaut α + β (+ γ/2 si "
-        "terme asymétrique) ; AIC/BIC et la demi-vie ln(0,5)/ln(α + β) sont reportés. Un **ARCH-LM "
-        "sur les résidus standardisés** vérifie qu'il ne reste pas d'effet ARCH."
+        "**Student** par défaut, Student asymétrique, GED). La **persistance** vaut α + β pour "
+        "GARCH (+ γ/2 pour GJR-GARCH), mais **β seul pour EGARCH** (modèle en log-variance) ; "
+        "pour APARCH elle est signalée comme approximative. AIC/BIC et la demi-vie "
+        "ln(0,5)/ln(persistance) sont reportés. Un **ARCH-LM sur les résidus standardisés** "
+        "vérifie qu'il ne reste pas d'effet ARCH."
     )
 
     # --- 4. Granger ----------------------------------------------------
@@ -1943,9 +2009,13 @@ with onglets[10]:
         "(package `arch`) donne les **résidus standardisés** zₜ ; (2) la matrice inconditionnelle "
         "Q̄ est la covariance empirique des zₜ, puis **(a, b) est estimé par maximum de "
         "vraisemblance** (log-vraisemblance gaussienne de la corrélation, "
-        "`scipy.optimize.minimize`, Nelder-Mead, contrainte a, b > 0 et a + b < 1). Les "
-        "**écarts-types** viennent d'une **Hessienne numérique** (différences finies), donc "
-        "approximatifs. Sortie : la série ρₜ + moyennes par sous-période."
+        "`scipy.optimize.minimize`, Nelder-Mead, contrainte a, b > 0 et a + b < 1). Deux jeux "
+        "d'**écarts-types** sont proposés : (i) **Hessienne numérique de 2ᵉ étape** (rapide mais "
+        "qui **ignore l'incertitude des marges GARCH**, donc sous-estimée) ; (ii) **bootstrap par "
+        "blocs mobiles** qui ré-estime tout le processus en deux étapes → inférence robuste, "
+        "**à privilégier pour la publication**. La « log-vraisemblance » affichée est la "
+        "**composante corrélation** (Engle 2002), pas celle du modèle complet. Sortie : ρₜ + "
+        "moyennes par sous-période."
     )
 
     # --- 6 bis. DCC multivarié ----------------------------------------
