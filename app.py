@@ -373,6 +373,16 @@ fichiers = fichiers or []
 
 EXEMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exemple_donnees.xlsx")
 MODELE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modele_donnees.xlsx")
+MASI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "masi_maroc.csv")
+
+
+@st.cache_data(show_spinner=False)
+def charger_maroc_integre(path):
+    """Charge le(s) indice(s) marocain(s) intégré(s) au dépôt (le MASI n'est pas
+    sur Yahoo). Renvoie un DataFrame indexé par date, prix hebdomadaires."""
+    m = pd.read_csv(path)
+    m["Date"] = pd.to_datetime(m["Date"], errors="coerce")
+    return m.dropna(subset=["Date"]).set_index("Date").sort_index()
 
 
 @st.dialog("📖 Guide : préparer votre fichier", width="large")
@@ -481,15 +491,36 @@ with st.sidebar.expander("🌐 Ajouter des indices (Yahoo Finance)",
 
 df_yahoo = st.session_state.get("yahoo_df")
 
-# Données d'exemple (uniquement si aucun fichier ni Yahoo)
-if not fichiers and df_yahoo is None and os.path.exists(EXEMPLE_PATH):
+# --- Indices marocains intégrés (MASI) — absents de Yahoo --------------
+masi_integre = None
+if os.path.exists(MASI_PATH):
+    try:
+        _masi_df = charger_maroc_integre(MASI_PATH)
+    except Exception:
+        _masi_df = None
+    if _masi_df is not None and not _masi_df.empty:
+        with st.sidebar.expander("🇲🇦 Indices marocains (intégrés)",
+                                 expanded=st.session_state.get("yahoo_df") is None and not fichiers):
+            _deb = _masi_df.index.min().date(); _fin = _masi_df.index.max().date()
+            st.caption(f"Données **intégrées** (pas besoin de fichier) — le MASI n'est pas sur "
+                       f"Yahoo. Disponible : {_deb} → {_fin}.")
+            choix_maroc = st.multiselect(
+                "Séries marocaines à inclure", list(_masi_df.columns),
+                default=[], key="masi_choix",
+            )
+            if choix_maroc:
+                masi_integre = _masi_df[choix_maroc]
+
+# Données d'exemple (uniquement si aucune autre source)
+_aucune = (not fichiers and df_yahoo is None and masi_integre is None)
+if _aucune and os.path.exists(EXEMPLE_PATH):
     if st.sidebar.button("📊 Charger les données d'exemple", width="stretch"):
         st.session_state["use_example"] = True
-use_example = (not fichiers and df_yahoo is None
-               and st.session_state.get("use_example", False) and os.path.exists(EXEMPLE_PATH))
+use_example = (_aucune and st.session_state.get("use_example", False)
+               and os.path.exists(EXEMPLE_PATH))
 
 # Page d'accueil tant qu'aucune donnée n'est disponible
-if not fichiers and df_yahoo is None and not use_example:
+if not fichiers and df_yahoo is None and masi_integre is None and not use_example:
     st.sidebar.caption("Importe un fichier, ou ajoute des indices Yahoo, ou charge l'exemple.")
     st.title("📈 Économétrie financière des indices boursiers")
     st.markdown(
@@ -623,6 +654,9 @@ else:
 
 if df_yahoo is not None:
     sources.append((df_yahoo, True))
+
+if masi_integre is not None:
+    sources.append((masi_integre, True))
 
 if not sources:
     st.title("📈 Économétrie financière des indices boursiers")
