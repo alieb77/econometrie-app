@@ -80,12 +80,12 @@ def lire_fichier(contenu: bytes, nom: str, feuille):
     """Lit un fichier Excel/CSV en DataFrame (mis en cache)."""
     bio = io.BytesIO(contenu)
     if nom.lower().endswith(".csv"):
-        # Détection simple du séparateur
+        # Détection du séparateur ; utf-8-sig retire le BOM (sinon « Date » pollué)
         try:
-            return pd.read_csv(bio, sep=None, engine="python")
+            return pd.read_csv(bio, sep=None, engine="python", encoding="utf-8-sig")
         except Exception:
             bio.seek(0)
-            return pd.read_csv(bio, sep=";")
+            return pd.read_csv(bio, sep=";", encoding="utf-8-sig")
     return pd.read_excel(bio, sheet_name=feuille)
 
 
@@ -562,6 +562,33 @@ def deviner_date(cols, df):
     return cols[0]
 
 
+def nom_instrument(nom):
+    """Déduit un nom court depuis un nom de fichier d'export
+    (« ATW - Données Historiques (1).csv » → « ATW »)."""
+    import re as _re
+    base = str(nom)
+    for ext in (".csv", ".xlsx", ".xls"):
+        if base.lower().endswith(ext):
+            base = base[:-len(ext)]
+            break
+    low = base.lower()
+    for sep in (" - données", " - donnees", " - historical", " historical data",
+                " - history", " - cours"):
+        i = low.find(sep)
+        if i != -1:
+            base = base[:i]
+            break
+    base = _re.sub(r"\s*\(\d+\)\s*$", "", base)
+    return base.strip() or str(nom)
+
+
+# noms de colonnes d'un export OHLCV (investing.com FR / EN)
+_CLOTURE = {"dernier": "fr", "clôture": "fr", "cloture": "fr",
+            "price": "en", "close": "en", "last": "en", "adj close": "en"}
+_OHLCV_FRERES = {"ouv.", "ouv", "open", "plus haut", "plus bas", "high", "low",
+                 "vol.", "vol", "variation %", "change %", "variation", "change", "%"}
+
+
 def parse_source(contenu, nom):
     """Parse un fichier Excel/CSV en DataFrame de séries (prix/rendements).
     Affiche un sélecteur de feuille (si multi-feuilles) et de colonne de dates,
@@ -582,6 +609,25 @@ def parse_source(contenu, nom):
     col_date = st.sidebar.selectbox(f"Colonne des dates — {nom}", colonnes,
                                     index=colonnes.index(deviner_date(colonnes, df_raw)),
                                     key=f"datecol_{nom}")
+
+    # Détection d'un export OHLCV (investing.com) → ne garder que la CLÔTURE,
+    # nommée d'après le fichier, en gérant le format de nombres FR ou EN.
+    _low = {str(c).strip().lower(): c for c in df_raw.columns}
+    _close_key = next((k for k in _CLOTURE if k in _low), None)
+    _freres = sum(1 for k in _low if k in _OHLCV_FRERES)
+    if _close_key is not None and _low[_close_key] != col_date and _freres >= 2:
+        _ccol = _low[_close_key]
+        _serie = df_raw[_ccol].astype(str).str.replace(" ", "", regex=False)
+        if _CLOTURE[_close_key] == "fr":          # 1.234,56  (point = millier, virgule = déc.)
+            _serie = _serie.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+        else:                                     # 1,234.56  (virgule = millier)
+            _serie = _serie.str.replace(",", "", regex=False)
+        _label = nom_instrument(nom)
+        df_raw = pd.DataFrame({col_date: df_raw[col_date],
+                               _label: pd.to_numeric(_serie, errors="coerce")})
+        st.sidebar.caption(f"« {nom} » : export reconnu → cours de clôture conservé "
+                           f"sous « {_label} ».")
+
     dff = df_raw.copy()
     est_date = False
     try:
