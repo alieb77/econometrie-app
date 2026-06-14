@@ -522,9 +522,14 @@ def parse_source(contenu, nom):
         dff = df_raw.copy()
         dff.index = range(len(dff))
         col_date = None
-    scols = [c for c in dff.columns if c != col_date and pd.api.types.is_numeric_dtype(dff[c])]
+    def _parasite(c):
+        # colonnes sans en-tête ou issues d'un CSV collé dans la feuille
+        s = str(c)
+        return s.startswith("Unnamed:") or '","' in s or s.lower().startswith("date,")
+    scols = [c for c in dff.columns if c != col_date and not _parasite(c)
+             and pd.api.types.is_numeric_dtype(dff[c])]
     for c in dff.columns:
-        if c not in scols and c != col_date:
+        if c not in scols and c != col_date and not _parasite(c):
             conv = pd.to_numeric(dff[c].astype(str).str.replace(" ", "").str.replace(",", "."),
                                  errors="coerce")
             if conv.notna().mean() > 0.8:
@@ -578,7 +583,9 @@ if df_yahoo is not None:
     sources.append((df_yahoo, True))
 
 if not sources:
-    st.sidebar.error("Aucune donnée exploitable. Vérifie tes fichiers.")
+    st.title("📈 Économétrie financière des indices boursiers")
+    st.error("❌ **Aucune donnée exploitable.** Vérifie que tes fichiers ont une colonne "
+             "de dates et au moins une colonne numérique.")
     st.stop()
 
 # --- Jeu de données final : une source telle quelle, sinon fusion ------
@@ -586,15 +593,48 @@ dfs = noms_uniques([s[0] for s in sources])
 if len(dfs) == 1:
     df = dfs[0]
     index_dates = sources[0][1]
+    n_fusion = 1
 else:
     df = fusionner_sources(dfs)
     index_dates = True
-    st.sidebar.success(f"🔗 {len(dfs)} sources fusionnées : {df.shape[1]} séries, "
-                       f"{len(df)} semaines communes.")
+    n_fusion = len(dfs)
 
+# Garde-fou : si la fusion ne laisse pas assez de données, on l'explique
+# DANS LA ZONE PRINCIPALE (et pas seulement dans la barre latérale cachée).
 if df.shape[1] < 1 or len(df) < 3:
-    st.sidebar.error("Pas assez de données communes (élargis la période ou réduis les séries).")
+    st.title("📈 Économétrie financière des indices boursiers")
+    if n_fusion > 1:
+        # détail des plages de chaque source pour comprendre le non-chevauchement
+        lignes = []
+        for (d, _e) in sources:
+            if isinstance(d.index, pd.DatetimeIndex) and len(d):
+                lignes.append(f"- **{', '.join(map(str, d.columns))[:60]}** : "
+                              f"{d.index.min().date()} → {d.index.max().date()} ({len(d)} lignes)")
+            else:
+                lignes.append(f"- **{', '.join(map(str, d.columns))[:60]}** : "
+                              f"dates non reconnues ({len(d)} lignes)")
+        st.error(
+            "❌ **Les sources n'ont aucune période commune après alignement** "
+            f"({len(df)} ligne(s) en commun)."
+        )
+        st.markdown("**Périodes détectées par source :**\n" + "\n".join(lignes))
+        st.info(
+            "Causes fréquentes :\n"
+            "- un fichier **mal formé** (ex. du CSV collé dans la feuille, colonnes décalées) → "
+            "nettoie-le pour n'avoir que `Date` + une colonne par indice ;\n"
+            "- des **plages de dates qui ne se chevauchent pas** ;\n"
+            "- une **colonne de dates mal détectée** (corrige-la dans la barre latérale, "
+            "section de chaque fichier).\n\n"
+            "Tu peux aussi **retirer un fichier** (croix dans la barre latérale) pour repartir."
+        )
+    else:
+        st.error("❌ **Pas assez de données dans la source** (moins de 3 lignes exploitables). "
+                 "Vérifie le fichier et la colonne de dates.")
     st.stop()
+
+if n_fusion > 1:
+    st.sidebar.success(f"🔗 {n_fusion} sources fusionnées : {df.shape[1]} séries, "
+                       f"{len(df)} semaines communes.")
 
 series_cols = list(df.columns)
 df = df[series_cols].astype(float)
