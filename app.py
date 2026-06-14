@@ -319,12 +319,15 @@ st.sidebar.title("📂 Données")
 st.sidebar.caption("Importe un fichier **et/ou** choisis des indices du catalogue Yahoo — "
                    "les deux se combinent et s'alignent automatiquement.")
 
-fichier = st.sidebar.file_uploader(
-    "📁 Importer un fichier (Excel/CSV)",
+fichiers = st.sidebar.file_uploader(
+    "📁 Importer un ou plusieurs fichiers (Excel/CSV)",
     type=["xlsx", "xls", "csv"],
-    help="1ʳᵉ colonne = dates ; colonnes suivantes = indices. Combinable avec le "
-         "catalogue Yahoo ci-dessous (ex. ton MASI + des indices internationaux).",
+    accept_multiple_files=True,
+    help="1ʳᵉ colonne = dates ; colonnes suivantes = indices. Tu peux déposer "
+         "**plusieurs fichiers à la fois** — ils sont tous fusionnés et alignés. "
+         "Combinable aussi avec le catalogue Yahoo (ex. ton MASI + des indices internationaux).",
 )
+fichiers = fichiers or []
 
 EXEMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exemple_donnees.xlsx")
 MODELE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modele_donnees.xlsx")
@@ -436,15 +439,15 @@ with st.sidebar.expander("🌐 Ajouter des indices (Yahoo Finance)",
 
 df_yahoo = st.session_state.get("yahoo_df")
 
-# Données d'exemple (uniquement si ni fichier ni Yahoo)
-if fichier is None and df_yahoo is None and os.path.exists(EXEMPLE_PATH):
+# Données d'exemple (uniquement si aucun fichier ni Yahoo)
+if not fichiers and df_yahoo is None and os.path.exists(EXEMPLE_PATH):
     if st.sidebar.button("📊 Charger les données d'exemple", width="stretch"):
         st.session_state["use_example"] = True
-use_example = (fichier is None and df_yahoo is None
+use_example = (not fichiers and df_yahoo is None
                and st.session_state.get("use_example", False) and os.path.exists(EXEMPLE_PATH))
 
 # Page d'accueil tant qu'aucune donnée n'est disponible
-if fichier is None and df_yahoo is None and not use_example:
+if not fichiers and df_yahoo is None and not use_example:
     st.sidebar.caption("Importe un fichier, ou ajoute des indices Yahoo, ou charge l'exemple.")
     st.title("📈 Économétrie financière des indices boursiers")
     st.markdown(
@@ -486,46 +489,39 @@ def deviner_date(cols, df):
     return cols[0]
 
 
-# --- Parse du fichier importé (ou exemple) -> df_file ------------------
-df_file = None
-index_dates_file = False
-if fichier is not None or use_example:
-    if use_example:
-        with open(EXEMPLE_PATH, "rb") as _f:
-            contenu = _f.read()
-        nom_fichier = "exemple_donnees.xlsx"
-        st.sidebar.success("📊 Données d'exemple chargées.")
-    else:
-        contenu = fichier.getvalue()
-        nom_fichier = fichier.name
-    feuilles_f = noms_feuilles(contenu, nom_fichier)
+def parse_source(contenu, nom):
+    """Parse un fichier Excel/CSV en DataFrame de séries (prix/rendements).
+    Affiche un sélecteur de feuille (si multi-feuilles) et de colonne de dates,
+    suffixés par le nom du fichier pour ne pas se chevaucher. Renvoie (df, est_date)."""
+    feuilles_f = noms_feuilles(contenu, nom)
     feuille = 0
     if feuilles_f and len(feuilles_f) > 1:
-        feuille = st.sidebar.selectbox("Feuille Excel", feuilles_f)
+        feuille = st.sidebar.selectbox(f"Feuille — {nom}", feuilles_f, key=f"sheet_{nom}")
     try:
-        df_raw = lire_fichier(contenu, nom_fichier, feuille)
+        df_raw = lire_fichier(contenu, nom, feuille)
     except Exception as e:
-        st.sidebar.error(f"Lecture impossible : {e}")
-        st.stop()
+        st.sidebar.error(f"« {nom} » illisible : {e}")
+        return None, False
     if df_raw.shape[1] < 2:
-        st.sidebar.error("Le fichier doit contenir une colonne de dates et au moins une série.")
-        st.stop()
+        st.sidebar.error(f"« {nom} » : il faut une colonne de dates + au moins une série.")
+        return None, False
     colonnes = list(df_raw.columns)
-    col_date = st.sidebar.selectbox("Colonne des dates", colonnes,
-                                    index=colonnes.index(deviner_date(colonnes, df_raw)))
+    col_date = st.sidebar.selectbox(f"Colonne des dates — {nom}", colonnes,
+                                    index=colonnes.index(deviner_date(colonnes, df_raw)),
+                                    key=f"datecol_{nom}")
     dff = df_raw.copy()
+    est_date = False
     try:
         dff[col_date] = pd.to_datetime(dff[col_date], errors="coerce", dayfirst=True)
         if dff[col_date].isna().all():
             raise ValueError
         dff = dff.dropna(subset=[col_date]).set_index(col_date).sort_index()
-        index_dates_file = True
+        est_date = True
     except Exception:
-        st.sidebar.warning("Colonne de dates non reconnue : numérotation simple utilisée.")
+        st.sidebar.warning(f"« {nom} » : dates non reconnues, numérotation simple utilisée.")
         dff = df_raw.copy()
         dff.index = range(len(dff))
         col_date = None
-        index_dates_file = False
     scols = [c for c in dff.columns if c != col_date and pd.api.types.is_numeric_dtype(dff[c])]
     for c in dff.columns:
         if c not in scols and c != col_date:
@@ -535,33 +531,66 @@ if fichier is not None or use_example:
                 dff[c] = conv
                 scols.append(c)
     if not scols:
-        st.sidebar.error("Aucune colonne numérique exploitable dans le fichier.")
-        st.stop()
-    df_file = dff[scols].astype(float)
+        st.sidebar.error(f"« {nom} » : aucune colonne numérique exploitable.")
+        return None, False
+    return dff[scols].astype(float), est_date
 
 
 def fusionner_sources(parts):
     """Aligne plusieurs sources sur un pas hebdomadaire commun (vendredi) et joint
-    les semaines communes — évite les désalignements entre fichier et Yahoo."""
+    les semaines communes — évite les désalignements entre fichiers / Yahoo."""
     rs = [d.resample("W-FRI").last() if isinstance(d.index, pd.DatetimeIndex) else d
           for d in parts]
     out = pd.concat(rs, axis=1, join="inner")
-    out = out.loc[:, ~out.columns.duplicated()]
     return out.dropna()
 
 
-# --- Jeu de données final : fichier, Yahoo, ou les deux fusionnés -------
-if df_file is not None and df_yahoo is not None:
-    df = fusionner_sources([df_file, df_yahoo])
-    index_dates = True
-    st.sidebar.success(f"🔗 Fusion fichier + Yahoo : {df.shape[1]} séries, "
-                       f"{len(df)} semaines communes.")
-elif df_file is not None:
-    df = df_file
-    index_dates = index_dates_file
+def noms_uniques(dfs):
+    """Évite les collisions de noms de colonnes entre sources (suffixe (2), (3)…)."""
+    vus, out = {}, []
+    for d in dfs:
+        d = d.copy()
+        nouveaux = []
+        for c in d.columns:
+            base = str(c)
+            vus[base] = vus.get(base, 0) + 1
+            nouveaux.append(base if vus[base] == 1 else f"{base} ({vus[base]})")
+        d.columns = nouveaux
+        out.append(d)
+    return out
+
+
+# --- Parse de toutes les sources (fichiers multiples + exemple) --------
+sources = []          # liste de (DataFrame, est_date)
+if use_example:
+    with open(EXEMPLE_PATH, "rb") as _f:
+        d_ex, e_ex = parse_source(_f.read(), "exemple_donnees.xlsx")
+    if d_ex is not None:
+        sources.append((d_ex, e_ex))
+    st.sidebar.success("📊 Données d'exemple chargées.")
 else:
-    df = df_yahoo.copy()
+    for f in fichiers:
+        d_f, e_f = parse_source(f.getvalue(), f.name)
+        if d_f is not None:
+            sources.append((d_f, e_f))
+
+if df_yahoo is not None:
+    sources.append((df_yahoo, True))
+
+if not sources:
+    st.sidebar.error("Aucune donnée exploitable. Vérifie tes fichiers.")
+    st.stop()
+
+# --- Jeu de données final : une source telle quelle, sinon fusion ------
+dfs = noms_uniques([s[0] for s in sources])
+if len(dfs) == 1:
+    df = dfs[0]
+    index_dates = sources[0][1]
+else:
+    df = fusionner_sources(dfs)
     index_dates = True
+    st.sidebar.success(f"🔗 {len(dfs)} sources fusionnées : {df.shape[1]} séries, "
+                       f"{len(df)} semaines communes.")
 
 if df.shape[1] < 1 or len(df) < 3:
     st.sidebar.error("Pas assez de données communes (élargis la période ou réduis les séries).")
