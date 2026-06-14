@@ -589,6 +589,24 @@ _OHLCV_FRERES = {"ouv.", "ouv", "open", "plus haut", "plus bas", "high", "low",
                  "vol.", "vol", "variation %", "change %", "variation", "change", "%"}
 
 
+def parser_dates(serie):
+    """Parse une colonne de dates en DÉTECTANT le format (jj/mm vs mm/jj).
+    Essaie les deux conventions et garde celle qui produit le plus de dates
+    valides puis l'espacement le plus régulier (crucial : un export US mm/jj/aaaa
+    parsé en jj/mm donne des dates mélangées → fusion cassée)."""
+    s = serie.astype(str).str.strip()
+    meilleur = None
+    for dayfirst in (False, True):       # mm/jj (US/investing EN) d'abord, puis jj/mm
+        d = pd.to_datetime(s, errors="coerce", dayfirst=dayfirst)
+        valides = int(d.notna().sum())
+        ecarts = d.dropna().sort_values().diff().dt.days.dropna()
+        irreg = float(ecarts.std()) if len(ecarts) > 2 and np.isfinite(ecarts.std()) else float("inf")
+        score = (valides, -irreg)
+        if meilleur is None or score > meilleur[0]:
+            meilleur = (score, d)
+    return meilleur[1]
+
+
 def parse_source(contenu, nom):
     """Parse un fichier Excel/CSV en DataFrame de séries (prix/rendements).
     Affiche un sélecteur de feuille (si multi-feuilles) et de colonne de dates,
@@ -631,7 +649,7 @@ def parse_source(contenu, nom):
     dff = df_raw.copy()
     est_date = False
     try:
-        dff[col_date] = pd.to_datetime(dff[col_date], errors="coerce", dayfirst=True)
+        dff[col_date] = parser_dates(dff[col_date])
         if dff[col_date].isna().all():
             raise ValueError
         dff = dff.dropna(subset=[col_date]).set_index(col_date).sort_index()
