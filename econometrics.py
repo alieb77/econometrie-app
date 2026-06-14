@@ -1150,25 +1150,33 @@ def rapport_complet(
     # --- 2. Statistiques descriptives ---------------------------------
     desc = pd.DataFrame({c: descriptive_stats(returns[c]) for c in returns.columns}).T
     desc.index.name = "Série"
+    if "Normale (5 %)" in desc.columns:
+        desc["Interprétation"] = desc["Normale (5 %)"].apply(
+            lambda x: "Normale" if bool(x) else "Non normale (queues épaisses)")
     feuilles["Stats descriptives"] = desc.reset_index()
 
     # --- 3. Stationnarité ADF (rendements + prix) ---------------------
+    def _interp_adf(stat):
+        return "Stationnaire (I(0))" if stat else "Non stationnaire (I(1))"
     lignes = []
     for c in returns.columns:
         try:
             a = adf_test(returns[c], regression="c")
             lignes.append({"Série": c, "Type": "Rendement", "Stat. ADF": a["statistique_adf"],
                            "p-value": a["p_value"], "Retards": a["retards_utilises"],
-                           "Stationnaire (5 %)": a["stationnaire_5pct"]})
+                           "Stationnaire (5 %)": a["stationnaire_5pct"],
+                           "Interprétation": _interp_adf(a["stationnaire_5pct"])})
         except Exception:
             lignes.append({"Série": c, "Type": "Rendement", "Stat. ADF": np.nan,
-                           "p-value": np.nan, "Retards": np.nan, "Stationnaire (5 %)": "erreur"})
+                           "p-value": np.nan, "Retards": np.nan, "Stationnaire (5 %)": "erreur",
+                           "Interprétation": "—"})
         if prices is not None and c in prices.columns:
             try:
                 a = adf_test(prices[c], regression="ct")
                 lignes.append({"Série": c, "Type": "Prix", "Stat. ADF": a["statistique_adf"],
                                "p-value": a["p_value"], "Retards": a["retards_utilises"],
-                               "Stationnaire (5 %)": a["stationnaire_5pct"]})
+                               "Stationnaire (5 %)": a["stationnaire_5pct"],
+                               "Interprétation": _interp_adf(a["stationnaire_5pct"])})
             except Exception:
                 pass
     feuilles["Stationnarité ADF"] = pd.DataFrame(lignes)
@@ -1180,11 +1188,13 @@ def rapport_complet(
             a = arch_lm_test(returns[c], nlags=arch_lags)
             lignes.append({"Série": c, "LM stat.": a["lm_stat"], "p-value (LM)": a["lm_p_value"],
                            "F stat.": a["f_stat"], "p-value (F)": a["f_p_value"],
-                           "Retards": a["nlags"], "Effets ARCH (5 %)": a["effets_arch_5pct"]})
+                           "Retards": a["nlags"], "Effets ARCH (5 %)": a["effets_arch_5pct"],
+                           "Interprétation": ("Effets ARCH → GARCH justifié"
+                                              if a["effets_arch_5pct"] else "Pas d'effets ARCH")})
         except Exception:
             lignes.append({"Série": c, "LM stat.": np.nan, "p-value (LM)": np.nan,
                            "F stat.": np.nan, "p-value (F)": np.nan, "Retards": arch_lags,
-                           "Effets ARCH (5 %)": "erreur"})
+                           "Effets ARCH (5 %)": "erreur", "Interprétation": "—"})
     feuilles["Effets ARCH-LM"] = pd.DataFrame(lignes)
 
     # --- Volatilités conditionnelles GARCH (données pour le graphe) ---
@@ -1204,11 +1214,15 @@ def rapport_complet(
         try:
             d = dcc_garch_bivariate(returns[principal], returns[o],
                                     dist=dcc_dist, vol=dcc_vol, o=dcc_o)
+            _rm = abs(d["rho_moyenne"])
+            _niv = "forte" if _rm >= 0.6 else ("modérée" if _rm >= 0.3 else "faible")
+            _dyn = "persistante" if d["persistance"] >= 0.9 else "peu persistante"
             lignes.append({
                 "Principale": principal, "Autre": o,
                 "a (réaction)": d["a"], "b (persistance)": d["b"], "a + b": d["persistance"],
                 "ρ moyenne": d["rho_moyenne"], "ρ min": d["rho_min"], "ρ max": d["rho_max"],
                 "ρ inconditionnelle": d["rho_inconditionnelle"], "n_obs": d["n_obs"],
+                "Interprétation": f"Corrélation {_niv}, dynamique {_dyn}",
             })
             rho_dict[f"{principal} – {o}"] = d["rho_t"]
         except Exception as e:
@@ -1231,10 +1245,13 @@ def rapport_complet(
                 for _, r in tab.iterrows():
                     lignes.append({"Sens": sens, "Retard": int(r["Retard"]),
                                    "F": r["F"], "p-value (F)": r["p-value (F)"],
-                                   "Significatif (5 %)": r["Significatif (5 %)"]})
+                                   "Significatif (5 %)": r["Significatif (5 %)"],
+                                   "Interprétation": ("Précède (causalité)"
+                                                      if r["Significatif (5 %)"] else "Pas de causalité")})
         except Exception as e:
             lignes.append({"Sens": f"{principal} ↔ {o}", "Retard": np.nan, "F": np.nan,
-                           "p-value (F)": f"erreur : {e}", "Significatif (5 %)": ""})
+                           "p-value (F)": f"erreur : {e}", "Significatif (5 %)": "",
+                           "Interprétation": "—"})
     feuilles["Causalité Granger"] = pd.DataFrame(lignes)
 
     # --- 7. Forbes-Rigobon (chaque crise × les 2 sens) ----------------
@@ -1253,6 +1270,12 @@ def rapport_complet(
                                                  returns[rcp].rename(rcp), mask)
                         delta = fr["delta_volatilite"]
                         valide = delta > 0   # FR suppose une HAUSSE de volatilité de la source
+                        if not valide:
+                            _interp_fr = "Non valide (δ≤0)"
+                        elif fr["contagion_5pct"]:
+                            _interp_fr = "Contagion"
+                        else:
+                            _interp_fr = "Interdépendance"
                         lignes.append({
                             "Crise": cr["nom"],
                             "Source (crise)": src, "Récepteur": rcp,
@@ -1260,6 +1283,7 @@ def rapport_complet(
                             "ρ crise (ajusté)": fr["rho_crisis_ajuste"], "δ (volatilité)": delta,
                             "z ajusté": fr["z_ajuste"], "p-value (ajusté)": fr["p_value_ajuste"],
                             "Contagion (5 %)": (fr["contagion_5pct"] if valide else "n/a (δ≤0)"),
+                            "Interprétation": _interp_fr,
                             "Validité": ("OK" if valide
                                          else "δ≤0 : volatilité source non accrue → sens NON valide"),
                             "n stable": fr["n_stable"], "n crise": fr["n_crisis"],

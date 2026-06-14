@@ -218,6 +218,38 @@ _CHART_BUILDERS = {
     "Forbes-Rigobon": _chart_forbes,
 }
 
+# Colonnes-verdict colorées dans le rapport Excel
+_COLONNES_COULEUR = {"Stationnaire (5 %)", "Effets ARCH (5 %)", "Significatif (5 %)",
+                     "Normale (5 %)", "Contagion (5 %)", "Interprétation"}
+
+
+def _fill_verdict(colname, val):
+    """Renvoie le code couleur (hex openpyxl) d'une cellule-verdict, ou None."""
+    VERT, ROUGE, ORANGE, GRIS = "C6EFCE", "FFC7CE", "FFEB9C", "E7E6E6"
+    s = str(val)
+    if colname in ("Stationnaire (5 %)", "Effets ARCH (5 %)", "Significatif (5 %)", "Normale (5 %)"):
+        if val is True or s == "True":
+            return VERT
+        if val is False or s == "False":
+            return ROUGE
+        return None
+    if colname == "Contagion (5 %)":
+        if val is True or s == "True":
+            return ROUGE
+        if val is False or s == "False":
+            return VERT
+        return GRIS                      # n/a (δ≤0)
+    if colname == "Interprétation":
+        if s.startswith("Contagion"):
+            return ROUGE
+        if s.startswith("Non valide") or s == "—":
+            return GRIS
+        if s.startswith(("Non stationnaire", "Pas ", "Non normale")):
+            return ORANGE
+        if s.startswith(("Stationnaire", "Effets ARCH", "Précède", "Interdépendance", "Normale")):
+            return VERT
+    return None
+
 
 def ecrire_rapport_xlsx(feuilles: dict, avec_graphiques: bool = True) -> bytes:
     """Écrit un dict {nom_feuille: DataFrame} dans un classeur Excel mis en forme
@@ -247,6 +279,16 @@ def ecrire_rapport_xlsx(feuilles: dict, avec_graphiques: bool = True) -> bytes:
             for col in ws.columns:
                 largeur = max((len(str(c.value)) for c in col if c.value is not None), default=10)
                 ws.column_dimensions[col[0].column_letter].width = min(max(largeur + 2, 11), 44)
+            # code couleur des colonnes-verdict (vert/rouge/orange/gris)
+            decalage = 1 if ecrire_index else 0
+            for cidx, cname in enumerate(df.columns):
+                if cname not in _COLONNES_COULEUR:
+                    continue
+                xl_col = cidx + 1 + decalage
+                for ridx, val in enumerate(df[cname].tolist()):
+                    hexa = _fill_verdict(cname, val)
+                    if hexa is not None:
+                        ws.cell(row=ridx + 2, column=xl_col).fill = PatternFill("solid", fgColor=hexa)
             # graphe représentatif à droite du tableau
             builder = _CHART_BUILDERS.get(nom) if avec_graphiques else None
             if builder is not None:
