@@ -847,6 +847,88 @@ def dcc_min_variance_portfolio_mv(
 
 
 # ======================================================================
+# Catalogue d'indices disponibles sur Yahoo Finance (testés OK)
+# ======================================================================
+# Pour une étude de corrélation désagrégée avec le Maroc : indices mondiaux,
+# émergents/frontière (dont MENA-Afrique), secteurs mondiaux, matières premières
+# & FX. Le MASI et ses sous-indices marocains NE sont PAS sur Yahoo (import fichier).
+CATALOGUE_YAHOO = {
+    # --- Indices mondiaux développés -------------------------------------
+    "^GSPC": {"label": "S&P 500 (USA)", "cat": "Mondial développé"},
+    "^DJI": {"label": "Dow Jones (USA)", "cat": "Mondial développé"},
+    "^IXIC": {"label": "Nasdaq Composite (USA)", "cat": "Mondial développé"},
+    "^FCHI": {"label": "CAC 40 (France)", "cat": "Mondial développé"},
+    "^GDAXI": {"label": "DAX (Allemagne)", "cat": "Mondial développé"},
+    "^FTSE": {"label": "FTSE 100 (Royaume-Uni)", "cat": "Mondial développé"},
+    "^STOXX50E": {"label": "Euro Stoxx 50 (zone euro)", "cat": "Mondial développé"},
+    "^STOXX": {"label": "Stoxx Europe 600", "cat": "Mondial développé"},
+    "^N225": {"label": "Nikkei 225 (Japon)", "cat": "Mondial développé"},
+    "^HSI": {"label": "Hang Seng (Hong Kong)", "cat": "Mondial développé"},
+    "FTSEMIB.MI": {"label": "FTSE MIB (Italie)", "cat": "Mondial développé"},
+    "^IBEX": {"label": "IBEX 35 (Espagne)", "cat": "Mondial développé"},
+    "^AEX": {"label": "AEX (Pays-Bas)", "cat": "Mondial développé"},
+    "^SSMI": {"label": "SMI (Suisse)", "cat": "Mondial développé"},
+    "^GSPTSE": {"label": "S&P/TSX (Canada)", "cat": "Mondial développé"},
+    "^AXJO": {"label": "ASX 200 (Australie)", "cat": "Mondial développé"},
+    "^KS11": {"label": "KOSPI (Corée du Sud)", "cat": "Mondial développé"},
+    "^N100": {"label": "Euronext 100", "cat": "Mondial développé"},
+    # --- Indices émergents / frontière (dont MENA-Afrique) ---------------
+    "^BVSP": {"label": "Bovespa (Brésil)", "cat": "Émergent / Frontière"},
+    "^MXX": {"label": "IPC (Mexique)", "cat": "Émergent / Frontière"},
+    "^MERV": {"label": "Merval (Argentine)", "cat": "Émergent / Frontière"},
+    "000001.SS": {"label": "Shanghai Composite (Chine)", "cat": "Émergent / Frontière"},
+    "^BSESN": {"label": "BSE Sensex (Inde)", "cat": "Émergent / Frontière"},
+    "^NSEI": {"label": "Nifty 50 (Inde)", "cat": "Émergent / Frontière"},
+    "^JKSE": {"label": "Jakarta (Indonésie)", "cat": "Émergent / Frontière"},
+    "^KLSE": {"label": "KLCI (Malaisie)", "cat": "Émergent / Frontière"},
+    "^TWII": {"label": "Taiwan Weighted", "cat": "Émergent / Frontière"},
+    "XU100.IS": {"label": "BIST 100 (Turquie)", "cat": "Émergent / Frontière"},
+    "^TA125.TA": {"label": "Tel Aviv 125 (Israël)", "cat": "Émergent / Frontière"},
+    "^JN0U.JO": {"label": "JSE Top 40 (Afrique du Sud)", "cat": "Émergent / Frontière"},
+    "KWT": {"label": "Koweït (ETF, MENA)", "cat": "Émergent / Frontière"},
+    "EEM": {"label": "MSCI Marchés émergents (ETF)", "cat": "Émergent / Frontière"},
+    "VWO": {"label": "Vanguard Émergents (ETF)", "cat": "Émergent / Frontière"},
+    "FM": {"label": "MSCI Frontier Markets (ETF)", "cat": "Émergent / Frontière"},
+    "EFA": {"label": "MSCI EAFE — dév. hors US (ETF)", "cat": "Émergent / Frontière"},
+    "EZA": {"label": "Afrique du Sud (ETF)", "cat": "Émergent / Frontière"},
+    "AFK": {"label": "Afrique (ETF VanEck)", "cat": "Émergent / Frontière"},
+    "TUR": {"label": "Turquie (ETF)", "cat": "Émergent / Frontière"},
+    "EWZ": {"label": "Brésil (ETF)", "cat": "Émergent / Frontière"},
+    "INDA": {"label": "Inde (ETF)", "cat": "Émergent / Frontière"},
+    # --- Secteurs mondiaux (ETF) ----------------------------------------
+    "XLE": {"label": "Énergie (S&P)", "cat": "Secteur mondial"},
+    "XLF": {"label": "Financières (S&P)", "cat": "Secteur mondial"},
+    "XLK": {"label": "Technologie (S&P)", "cat": "Secteur mondial"},
+    "XLV": {"label": "Santé (S&P)", "cat": "Secteur mondial"},
+    "XLI": {"label": "Industrie (S&P)", "cat": "Secteur mondial"},
+    "XLB": {"label": "Matériaux (S&P)", "cat": "Secteur mondial"},
+    "XLP": {"label": "Consommation de base (S&P)", "cat": "Secteur mondial"},
+    "XLY": {"label": "Consommation discrétionnaire (S&P)", "cat": "Secteur mondial"},
+    "XLU": {"label": "Services collectifs (S&P)", "cat": "Secteur mondial"},
+    "XLRE": {"label": "Immobilier (S&P)", "cat": "Secteur mondial"},
+    "XLC": {"label": "Communication (S&P)", "cat": "Secteur mondial"},
+    "KBE": {"label": "Banques US (KBW SPDR)", "cat": "Secteur mondial"},
+    "KBWB": {"label": "Banques US (Invesco KBW)", "cat": "Secteur mondial"},
+    "XME": {"label": "Métaux & Mines (US)", "cat": "Secteur mondial"},
+    "GDX": {"label": "Mines d'or", "cat": "Secteur mondial"},
+    "PICK": {"label": "Métaux & Mines (monde)", "cat": "Secteur mondial"},
+    "ITB": {"label": "Construction résidentielle US", "cat": "Secteur mondial"},
+    "PKB": {"label": "Bâtiment & Construction", "cat": "Secteur mondial"},
+    "VNQ": {"label": "Immobilier US (REIT)", "cat": "Secteur mondial"},
+    "XOP": {"label": "Exploration pétrolière", "cat": "Secteur mondial"},
+    # --- Matières premières & devises ------------------------------------
+    "CL=F": {"label": "Pétrole WTI", "cat": "Matière première / FX"},
+    "BZ=F": {"label": "Pétrole Brent", "cat": "Matière première / FX"},
+    "GC=F": {"label": "Or", "cat": "Matière première / FX"},
+    "SI=F": {"label": "Argent", "cat": "Matière première / FX"},
+    "HG=F": {"label": "Cuivre", "cat": "Matière première / FX"},
+    "DX-Y.NYB": {"label": "Indice dollar (DXY)", "cat": "Matière première / FX"},
+    "MAD=X": {"label": "USD/MAD (dirham)", "cat": "Matière première / FX"},
+    "EURMAD=X": {"label": "EUR/MAD (dirham)", "cat": "Matière première / FX"},
+}
+
+
+# ======================================================================
 # 10. Bibliothèque de crises financières (pour Forbes-Rigobon)
 # ======================================================================
 # cat : "Mondiale" (🔴), "Régionale" (🟠), "Maroc/MENA" (🟡).

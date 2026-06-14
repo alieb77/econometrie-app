@@ -390,14 +390,26 @@ if source_donnees == SRC_FICHIER:
         if st.sidebar.button("📊 Charger les données d'exemple", width="stretch"):
             st.session_state["use_example"] = True
 
-# --- Source YAHOO FINANCE : téléchargement automatique par tickers ------
+# --- Source YAHOO FINANCE : catalogue + téléchargement automatique ------
 if source_donnees == SRC_YAHOO:
-    st.sidebar.caption("Tape des tickers Yahoo Finance, séparés par des virgules.")
+    _EMO_CAT = {"Mondial développé": "🌍", "Émergent / Frontière": "📈",
+                "Secteur mondial": "🏭", "Matière première / FX": "🛢️"}
+
+    def _fmt_ticker(t):
+        c = ec.CATALOGUE_YAHOO[t]
+        return f"{_EMO_CAT.get(c['cat'], '')} {c['label']} ({t})"
+
+    st.sidebar.caption("Choisis des indices dans le catalogue (68 testés & disponibles).")
+    cat_choix = st.sidebar.multiselect(
+        "Catalogue d'indices", list(ec.CATALOGUE_YAHOO),
+        default=["^GSPC", "^FCHI", "^GDAXI"], format_func=_fmt_ticker, key="yf_catalogue",
+        help="🌍 mondiaux · 📈 émergents/frontière (dont MENA-Afrique) · 🏭 secteurs · "
+             "🛢️ matières premières/FX. ⚠️ Le MASI et les indices marocains ne sont PAS "
+             "sur Yahoo : importe-les par fichier.",
+    )
     tickers_str = st.sidebar.text_input(
-        "Tickers", value="^GSPC, ^FCHI, ^GDAXI", key="yf_tickers",
-        help="Ex. ^GSPC = S&P 500, ^FCHI = CAC 40, ^GDAXI = DAX, ^STOXX50E = Euro "
-             "Stoxx 50, ^N225 = Nikkei, ^FTSE = FTSE 100. ⚠️ Le MASI et les indices "
-             "marocains ne sont PAS sur Yahoo : importez-les par fichier.",
+        "Tickers supplémentaires (optionnel)", value="", key="yf_tickers",
+        help="Codes Yahoo séparés par des virgules, en plus du catalogue.",
     )
     yc1, yc2 = st.sidebar.columns(2)
     yf_debut = yc1.date_input("Début", value=pd.Timestamp("2015-01-01").date(), key="yf_debut")
@@ -405,24 +417,35 @@ if source_donnees == SRC_YAHOO:
     yf_freq = st.sidebar.radio("Fréquence du téléchargement", ["Hebdomadaire", "Quotidienne"],
                                horizontal=True, key="yf_freq")
     if st.sidebar.button("🌐 Télécharger les données", width="stretch", key="yf_go"):
-        tickers = tuple(t.strip() for t in tickers_str.replace(";", ",").split(",") if t.strip())
-        with st.spinner("Téléchargement depuis Yahoo Finance…"):
-            px, err = telecharger_yahoo(
-                tickers, str(yf_debut), str(yf_fin),
-                "1wk" if yf_freq == "Hebdomadaire" else "1d",
-            )
-        if px is None or px.shape[1] == 0:
-            st.session_state.pop("yahoo_contenu", None)
-            st.sidebar.error(f"Échec : {err}. Réessaie dans un instant — Yahoo limite "
-                             "parfois les requêtes (surtout sur le cloud).")
+        extra = [t.strip() for t in tickers_str.replace(";", ",").split(",") if t.strip()]
+        tickers = tuple(dict.fromkeys(list(cat_choix) + extra))   # union sans doublon
+        if not tickers:
+            st.sidebar.warning("Sélectionne au moins un indice (catalogue ou ticker).")
         else:
-            pr = px.reset_index()
-            pr.columns = ["Date"] + [str(c) for c in px.columns]
-            _b = io.BytesIO()
-            pr.to_excel(_b, index=False, sheet_name="Cours")
-            st.session_state["yahoo_contenu"] = _b.getvalue()
-            st.sidebar.success(f"✓ {px.shape[1]} série(s), {len(px)} points "
-                               f"({px.index.min().date()} → {px.index.max().date()}).")
+            with st.spinner("Téléchargement depuis Yahoo Finance…"):
+                px, err = telecharger_yahoo(
+                    tickers, str(yf_debut), str(yf_fin),
+                    "1wk" if yf_freq == "Hebdomadaire" else "1d",
+                )
+            if px is None or px.shape[1] == 0:
+                st.session_state.pop("yahoo_contenu", None)
+                st.sidebar.error(f"Échec : {err}. Réessaie dans un instant — Yahoo limite "
+                                 "parfois les requêtes (surtout sur le cloud).")
+            else:
+                # colonnes en libellés lisibles (sinon le ticker brut)
+                pr = px.reset_index()
+                pr.columns = ["Date"] + [
+                    ec.CATALOGUE_YAHOO.get(str(c), {}).get("label", str(c)) for c in px.columns
+                ]
+                _b = io.BytesIO()
+                pr.to_excel(_b, index=False, sheet_name="Cours")
+                st.session_state["yahoo_contenu"] = _b.getvalue()
+                manquants = [t for t in tickers if t not in px.columns]
+                msg = (f"✓ {px.shape[1]} série(s), {len(px)} points "
+                       f"({px.index.min().date()} → {px.index.max().date()}).")
+                if manquants:
+                    msg += f" Non trouvés : {', '.join(manquants)}."
+                st.sidebar.success(msg)
 
 yahoo_contenu = st.session_state.get("yahoo_contenu") if source_donnees == SRC_YAHOO else None
 
