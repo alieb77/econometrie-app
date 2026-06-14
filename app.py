@@ -277,17 +277,59 @@ def calc_dy_rolling(vol_df: pd.DataFrame, lags: int, horizon: int, window: int, 
     return ec.dy_rolling_total(vol_df, lags=lags, horizon=horizon, window=window, step=step)
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def telecharger_yahoo(tickers: tuple, debut: str, fin: str, intervalle: str):
+    """Télécharge les cours de clôture (ajustés) depuis Yahoo Finance via yfinance.
+    Renvoie (DataFrame de prix alignés, message d'erreur). Réessaie 3× car Yahoo
+    limite parfois les requêtes (réponse vide)."""
+    import yfinance as yf
+    tickers = [t for t in tickers if t]
+    if not tickers:
+        return None, "Aucun ticker fourni."
+    derniere_err = ""
+    for _ in range(3):
+        try:
+            data = yf.download(list(tickers), start=str(debut), end=str(fin),
+                               interval=intervalle, progress=False, auto_adjust=True)
+        except Exception as e:
+            derniere_err = str(e)[:160]
+            continue
+        if data is None or len(data) == 0:
+            derniere_err = "réponse vide (limite Yahoo probable)"
+            continue
+        if isinstance(data.columns, pd.MultiIndex):
+            niv0 = data.columns.get_level_values(0)
+            champ = "Close" if "Close" in niv0 else niv0[0]
+            px = data[champ].copy()
+        else:                                   # 1 seul ticker
+            col = "Close" if "Close" in data.columns else data.columns[-1]
+            px = data[[col]].copy()
+            px.columns = [tickers[0]]
+        px = px.dropna(how="any")               # panel aligné (semaines communes)
+        if not px.empty and px.shape[1] >= 1:
+            return px, ""
+        derniere_err = "données reçues mais vides après alignement"
+    return None, derniere_err or "Yahoo n'a renvoyé aucune donnée."
+
+
 # ======================================================================
 # BARRE LATÉRALE — chargement & préparation des données
 # ======================================================================
 st.sidebar.title("📂 Données")
 st.sidebar.caption("Série(s) d'indices boursiers (hebdomadaires ou quotidiennes).")
 
-fichier = st.sidebar.file_uploader(
-    "Fichier Excel ou CSV",
-    type=["xlsx", "xls", "csv"],
-    help="1ʳᵉ colonne = dates ; colonnes suivantes = indices (prix ou rendements).",
-)
+SRC_FICHIER = "📁 Importer un fichier"
+SRC_YAHOO = "🌐 Télécharger (Yahoo Finance)"
+source_donnees = st.sidebar.radio("Source des données", [SRC_FICHIER, SRC_YAHOO],
+                                  key="data_source")
+
+fichier = None
+if source_donnees == SRC_FICHIER:
+    fichier = st.sidebar.file_uploader(
+        "Fichier Excel ou CSV",
+        type=["xlsx", "xls", "csv"],
+        help="1ʳᵉ colonne = dates ; colonnes suivantes = indices (prix ou rendements).",
+    )
 
 EXEMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exemple_donnees.xlsx")
 MODELE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modele_donnees.xlsx")
@@ -341,22 +383,62 @@ def guide_format():
             )
 
 
-if st.sidebar.button("📖 Comment préparer le fichier ?", width="stretch"):
-    guide_format()
+if source_donnees == SRC_FICHIER:
+    if st.sidebar.button("📖 Comment préparer le fichier ?", width="stretch"):
+        guide_format()
+    if fichier is None and os.path.exists(EXEMPLE_PATH):
+        if st.sidebar.button("📊 Charger les données d'exemple", width="stretch"):
+            st.session_state["use_example"] = True
 
-if fichier is None and os.path.exists(EXEMPLE_PATH):
-    if st.sidebar.button("📊 Charger les données d'exemple", width="stretch"):
-        st.session_state["use_example"] = True
-
-# Source des données : fichier téléversé, sinon exemple (si demandé)
-use_example = fichier is None and st.session_state.get("use_example", False) \
-    and os.path.exists(EXEMPLE_PATH)
-
-if fichier is None and not use_example:
-    st.sidebar.caption(
-        "Pas de fichier ? Cliquez sur « Charger les données d'exemple », "
-        "ou générez-le avec `python generer_exemple.py`."
+# --- Source YAHOO FINANCE : téléchargement automatique par tickers ------
+if source_donnees == SRC_YAHOO:
+    st.sidebar.caption("Tape des tickers Yahoo Finance, séparés par des virgules.")
+    tickers_str = st.sidebar.text_input(
+        "Tickers", value="^GSPC, ^FCHI, ^GDAXI", key="yf_tickers",
+        help="Ex. ^GSPC = S&P 500, ^FCHI = CAC 40, ^GDAXI = DAX, ^STOXX50E = Euro "
+             "Stoxx 50, ^N225 = Nikkei, ^FTSE = FTSE 100. ⚠️ Le MASI et les indices "
+             "marocains ne sont PAS sur Yahoo : importez-les par fichier.",
     )
+    yc1, yc2 = st.sidebar.columns(2)
+    yf_debut = yc1.date_input("Début", value=pd.Timestamp("2015-01-01").date(), key="yf_debut")
+    yf_fin = yc2.date_input("Fin", value=pd.Timestamp.today().date(), key="yf_fin")
+    yf_freq = st.sidebar.radio("Fréquence du téléchargement", ["Hebdomadaire", "Quotidienne"],
+                               horizontal=True, key="yf_freq")
+    if st.sidebar.button("🌐 Télécharger les données", width="stretch", key="yf_go"):
+        tickers = tuple(t.strip() for t in tickers_str.replace(";", ",").split(",") if t.strip())
+        with st.spinner("Téléchargement depuis Yahoo Finance…"):
+            px, err = telecharger_yahoo(
+                tickers, str(yf_debut), str(yf_fin),
+                "1wk" if yf_freq == "Hebdomadaire" else "1d",
+            )
+        if px is None or px.shape[1] == 0:
+            st.session_state.pop("yahoo_contenu", None)
+            st.sidebar.error(f"Échec : {err}. Réessaie dans un instant — Yahoo limite "
+                             "parfois les requêtes (surtout sur le cloud).")
+        else:
+            pr = px.reset_index()
+            pr.columns = ["Date"] + [str(c) for c in px.columns]
+            _b = io.BytesIO()
+            pr.to_excel(_b, index=False, sheet_name="Cours")
+            st.session_state["yahoo_contenu"] = _b.getvalue()
+            st.sidebar.success(f"✓ {px.shape[1]} série(s), {len(px)} points "
+                               f"({px.index.min().date()} → {px.index.max().date()}).")
+
+yahoo_contenu = st.session_state.get("yahoo_contenu") if source_donnees == SRC_YAHOO else None
+
+# Source effective : fichier téléversé, sinon Yahoo, sinon exemple (si demandé)
+use_example = (source_donnees == SRC_FICHIER and fichier is None
+               and st.session_state.get("use_example", False)
+               and os.path.exists(EXEMPLE_PATH))
+
+if fichier is None and yahoo_contenu is None and not use_example:
+    if source_donnees == SRC_YAHOO:
+        st.sidebar.caption("Renseigne des tickers puis clique « Télécharger les données ».")
+    else:
+        st.sidebar.caption(
+            "Pas de fichier ? Cliquez sur « Charger les données d'exemple », "
+            "ou générez-le avec `python generer_exemple.py`."
+        )
     st.title("📈 Économétrie financière des indices boursiers")
     st.markdown(
         """
@@ -389,8 +471,11 @@ if fichier is None and not use_example:
     )
     st.stop()
 
-# --- Lecture du fichier ------------------------------------------------
-if use_example:
+# --- Lecture de la source ----------------------------------------------
+if yahoo_contenu is not None:
+    contenu = yahoo_contenu
+    nom_fichier = "yahoo_finance.xlsx"
+elif use_example:
     with open(EXEMPLE_PATH, "rb") as _f:
         contenu = _f.read()
     nom_fichier = "exemple_donnees.xlsx"
