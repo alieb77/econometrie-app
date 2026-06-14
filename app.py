@@ -316,20 +316,15 @@ def telecharger_yahoo(tickers: tuple, debut: str, fin: str, intervalle: str):
 # BARRE LATÉRALE — chargement & préparation des données
 # ======================================================================
 st.sidebar.title("📂 Données")
-st.sidebar.caption("Série(s) d'indices boursiers (hebdomadaires ou quotidiennes).")
+st.sidebar.caption("Importe un fichier **et/ou** choisis des indices du catalogue Yahoo — "
+                   "les deux se combinent et s'alignent automatiquement.")
 
-SRC_FICHIER = "📁 Importer un fichier"
-SRC_YAHOO = "🌐 Télécharger (Yahoo Finance)"
-source_donnees = st.sidebar.radio("Source des données", [SRC_FICHIER, SRC_YAHOO],
-                                  key="data_source")
-
-fichier = None
-if source_donnees == SRC_FICHIER:
-    fichier = st.sidebar.file_uploader(
-        "Fichier Excel ou CSV",
-        type=["xlsx", "xls", "csv"],
-        help="1ʳᵉ colonne = dates ; colonnes suivantes = indices (prix ou rendements).",
-    )
+fichier = st.sidebar.file_uploader(
+    "📁 Importer un fichier (Excel/CSV)",
+    type=["xlsx", "xls", "csv"],
+    help="1ʳᵉ colonne = dates ; colonnes suivantes = indices. Combinable avec le "
+         "catalogue Yahoo ci-dessous (ex. ton MASI + des indices internationaux).",
+)
 
 EXEMPLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exemple_donnees.xlsx")
 MODELE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modele_donnees.xlsx")
@@ -383,85 +378,74 @@ def guide_format():
             )
 
 
-if source_donnees == SRC_FICHIER:
-    if st.sidebar.button("📖 Comment préparer le fichier ?", width="stretch"):
-        guide_format()
-    if fichier is None and os.path.exists(EXEMPLE_PATH):
-        if st.sidebar.button("📊 Charger les données d'exemple", width="stretch"):
-            st.session_state["use_example"] = True
+if st.sidebar.button("📖 Comment préparer le fichier ?", width="stretch"):
+    guide_format()
 
-# --- Source YAHOO FINANCE : catalogue + téléchargement automatique ------
-if source_donnees == SRC_YAHOO:
-    _EMO_CAT = {"Mondial développé": "🌍", "Émergent / Frontière": "📈",
-                "Secteur mondial": "🏭", "Matière première / FX": "🛢️"}
+# --- Catalogue Yahoo Finance, rangé par catégorie (combinable au fichier) ---
+_EMO_CAT = {"Mondial développé": "🌍", "Émergent / Frontière": "📈",
+            "Secteur mondial": "🏭", "Matière première / FX": "🛢️"}
+_groupes_cat = {}
+for _t, _info in ec.CATALOGUE_YAHOO.items():
+    _groupes_cat.setdefault(_info["cat"], []).append(_t)
 
-    def _fmt_ticker(t):
-        c = ec.CATALOGUE_YAHOO[t]
-        return f"{_EMO_CAT.get(c['cat'], '')} {c['label']} ({t})"
-
-    st.sidebar.caption("Choisis des indices dans le catalogue (68 testés & disponibles).")
-    cat_choix = st.sidebar.multiselect(
-        "Catalogue d'indices", list(ec.CATALOGUE_YAHOO),
-        default=["^GSPC", "^FCHI", "^GDAXI"], format_func=_fmt_ticker, key="yf_catalogue",
-        help="🌍 mondiaux · 📈 émergents/frontière (dont MENA-Afrique) · 🏭 secteurs · "
-             "🛢️ matières premières/FX. ⚠️ Le MASI et les indices marocains ne sont PAS "
-             "sur Yahoo : importe-les par fichier.",
-    )
-    tickers_str = st.sidebar.text_input(
-        "Tickers supplémentaires (optionnel)", value="", key="yf_tickers",
-        help="Codes Yahoo séparés par des virgules, en plus du catalogue.",
-    )
-    yc1, yc2 = st.sidebar.columns(2)
+with st.sidebar.expander("🌐 Ajouter des indices (Yahoo Finance)",
+                         expanded=st.session_state.get("yahoo_df") is None):
+    st.caption("Se combinent à ton fichier. ⚠️ Le MASI marocain n'est pas sur Yahoo.")
+    sel_catalogue = []
+    for _cat, _ts in _groupes_cat.items():
+        _def = (["^GSPC", "^FCHI"] if (_cat == "Mondial développé"
+                and st.session_state.get("yahoo_df") is None) else [])
+        sel_catalogue += st.multiselect(
+            f"{_EMO_CAT.get(_cat, '')} {_cat}", _ts, default=_def,
+            format_func=lambda t: f"{ec.CATALOGUE_YAHOO[t]['label']} ({t})",
+            key=f"yf_cat_{_cat}",
+        )
+    yf_extra = st.text_input("Tickers supplémentaires (optionnel)", value="", key="yf_tickers",
+                             help="Codes Yahoo en plus du catalogue, séparés par des virgules.")
+    yc1, yc2 = st.columns(2)
     yf_debut = yc1.date_input("Début", value=pd.Timestamp("2015-01-01").date(), key="yf_debut")
     yf_fin = yc2.date_input("Fin", value=pd.Timestamp.today().date(), key="yf_fin")
-    yf_freq = st.sidebar.radio("Fréquence du téléchargement", ["Hebdomadaire", "Quotidienne"],
-                               horizontal=True, key="yf_freq")
-    if st.sidebar.button("🌐 Télécharger les données", width="stretch", key="yf_go"):
-        extra = [t.strip() for t in tickers_str.replace(";", ",").split(",") if t.strip()]
-        tickers = tuple(dict.fromkeys(list(cat_choix) + extra))   # union sans doublon
+    yf_freq = st.radio("Fréquence", ["Hebdomadaire", "Quotidienne"], horizontal=True, key="yf_freq")
+    gc1, gc2 = st.columns(2)
+    if gc1.button("🌐 Télécharger", width="stretch", key="yf_go"):
+        extra = [t.strip() for t in yf_extra.replace(";", ",").split(",") if t.strip()]
+        tickers = tuple(dict.fromkeys(list(sel_catalogue) + extra))
         if not tickers:
-            st.sidebar.warning("Sélectionne au moins un indice (catalogue ou ticker).")
+            st.warning("Choisis au moins un indice.")
         else:
-            with st.spinner("Téléchargement depuis Yahoo Finance…"):
-                px, err = telecharger_yahoo(
-                    tickers, str(yf_debut), str(yf_fin),
-                    "1wk" if yf_freq == "Hebdomadaire" else "1d",
-                )
+            with st.spinner("Téléchargement Yahoo Finance…"):
+                px, err = telecharger_yahoo(tickers, str(yf_debut), str(yf_fin),
+                                            "1wk" if yf_freq == "Hebdomadaire" else "1d")
             if px is None or px.shape[1] == 0:
-                st.session_state.pop("yahoo_contenu", None)
-                st.sidebar.error(f"Échec : {err}. Réessaie dans un instant — Yahoo limite "
-                                 "parfois les requêtes (surtout sur le cloud).")
+                st.session_state.pop("yahoo_df", None)
+                st.error(f"Échec : {err}. Réessaie (Yahoo limite parfois les requêtes).")
             else:
-                # colonnes en libellés lisibles (sinon le ticker brut)
-                pr = px.reset_index()
-                pr.columns = ["Date"] + [
-                    ec.CATALOGUE_YAHOO.get(str(c), {}).get("label", str(c)) for c in px.columns
-                ]
-                _b = io.BytesIO()
-                pr.to_excel(_b, index=False, sheet_name="Cours")
-                st.session_state["yahoo_contenu"] = _b.getvalue()
                 manquants = [t for t in tickers if t not in px.columns]
-                msg = (f"✓ {px.shape[1]} série(s), {len(px)} points "
-                       f"({px.index.min().date()} → {px.index.max().date()}).")
+                px.columns = [ec.CATALOGUE_YAHOO.get(str(c), {}).get("label", str(c))
+                              for c in px.columns]
+                px.index.name = "Date"
+                st.session_state["yahoo_df"] = px
+                m = f"✓ {px.shape[1]} indice(s), {len(px)} points."
                 if manquants:
-                    msg += f" Non trouvés : {', '.join(manquants)}."
-                st.sidebar.success(msg)
+                    m += f" Non trouvés : {', '.join(manquants)}."
+                st.success(m)
+    if gc2.button("🗑️ Retirer", width="stretch", key="yf_clear"):
+        st.session_state.pop("yahoo_df", None)
+    if st.session_state.get("yahoo_df") is not None:
+        st.caption(f"📥 {st.session_state['yahoo_df'].shape[1]} indice(s) Yahoo en mémoire.")
 
-yahoo_contenu = st.session_state.get("yahoo_contenu") if source_donnees == SRC_YAHOO else None
+df_yahoo = st.session_state.get("yahoo_df")
 
-# Source effective : fichier téléversé, sinon Yahoo, sinon exemple (si demandé)
-use_example = (source_donnees == SRC_FICHIER and fichier is None
-               and st.session_state.get("use_example", False)
-               and os.path.exists(EXEMPLE_PATH))
+# Données d'exemple (uniquement si ni fichier ni Yahoo)
+if fichier is None and df_yahoo is None and os.path.exists(EXEMPLE_PATH):
+    if st.sidebar.button("📊 Charger les données d'exemple", width="stretch"):
+        st.session_state["use_example"] = True
+use_example = (fichier is None and df_yahoo is None
+               and st.session_state.get("use_example", False) and os.path.exists(EXEMPLE_PATH))
 
-if fichier is None and yahoo_contenu is None and not use_example:
-    if source_donnees == SRC_YAHOO:
-        st.sidebar.caption("Renseigne des tickers puis clique « Télécharger les données ».")
-    else:
-        st.sidebar.caption(
-            "Pas de fichier ? Cliquez sur « Charger les données d'exemple », "
-            "ou générez-le avec `python generer_exemple.py`."
-        )
+# Page d'accueil tant qu'aucune donnée n'est disponible
+if fichier is None and df_yahoo is None and not use_example:
+    st.sidebar.caption("Importe un fichier, ou ajoute des indices Yahoo, ou charge l'exemple.")
     st.title("📈 Économétrie financière des indices boursiers")
     st.markdown(
         """
@@ -481,49 +465,15 @@ if fichier is None and yahoo_contenu is None and not use_example:
 
         ---
         #### Pour commencer
-        1. Préparez un fichier **Excel/CSV** : 1ʳᵉ colonne = **dates**, colonnes
-           suivantes = **indices** (au moins **2** pour Granger et Forbes-Rigobon).
-        2. Chargez-le via le panneau de gauche **📂 Données**.
-        3. Indiquez s'il s'agit de **prix** ou de **rendements**.
-        4. Parcourez les onglets, configurez et lancez chaque test.
+        - **Importe un fichier** (1ʳᵉ colonne = dates, puis un indice par colonne), **et/ou**
+        - **ajoute des indices internationaux** depuis le catalogue Yahoo Finance — les deux
+          se combinent et s'alignent tout seuls (idéal : ton MASI + des comparateurs mondiaux).
 
-        > 💡 Astuce : un fichier de démonstration (`exemple_donnees.xlsx`,
-        > indices *MASI, CAC40, SP500, SOURCE_US*) illustre tous les tests, dont
-        > un épisode de **contagion**.
+        > 💡 Un fichier de démonstration (`exemple_donnees.xlsx` : *MASI, CAC40, SP500,
+        > SOURCE_US*) illustre tous les tests, dont un épisode de **contagion**.
         """
     )
     st.stop()
-
-# --- Lecture de la source ----------------------------------------------
-if yahoo_contenu is not None:
-    contenu = yahoo_contenu
-    nom_fichier = "yahoo_finance.xlsx"
-elif use_example:
-    with open(EXEMPLE_PATH, "rb") as _f:
-        contenu = _f.read()
-    nom_fichier = "exemple_donnees.xlsx"
-    st.sidebar.success("📊 Données d'exemple chargées.")
-else:
-    contenu = fichier.getvalue()
-    nom_fichier = fichier.name
-
-feuilles = noms_feuilles(contenu, nom_fichier)
-feuille = 0
-if feuilles and len(feuilles) > 1:
-    feuille = st.sidebar.selectbox("Feuille Excel", feuilles)
-
-try:
-    df_raw = lire_fichier(contenu, nom_fichier, feuille)
-except Exception as e:
-    st.sidebar.error(f"Lecture impossible : {e}")
-    st.stop()
-
-if df_raw.shape[1] < 2:
-    st.sidebar.error("Le fichier doit contenir une colonne de dates et au moins une série.")
-    st.stop()
-
-# --- Colonne de dates --------------------------------------------------
-colonnes = list(df_raw.columns)
 
 
 def deviner_date(cols, df):
@@ -536,42 +486,88 @@ def deviner_date(cols, df):
     return cols[0]
 
 
-col_date = st.sidebar.selectbox(
-    "Colonne des dates",
-    colonnes,
-    index=colonnes.index(deviner_date(colonnes, df_raw)),
-)
+# --- Parse du fichier importé (ou exemple) -> df_file ------------------
+df_file = None
+index_dates_file = False
+if fichier is not None or use_example:
+    if use_example:
+        with open(EXEMPLE_PATH, "rb") as _f:
+            contenu = _f.read()
+        nom_fichier = "exemple_donnees.xlsx"
+        st.sidebar.success("📊 Données d'exemple chargées.")
+    else:
+        contenu = fichier.getvalue()
+        nom_fichier = fichier.name
+    feuilles_f = noms_feuilles(contenu, nom_fichier)
+    feuille = 0
+    if feuilles_f and len(feuilles_f) > 1:
+        feuille = st.sidebar.selectbox("Feuille Excel", feuilles_f)
+    try:
+        df_raw = lire_fichier(contenu, nom_fichier, feuille)
+    except Exception as e:
+        st.sidebar.error(f"Lecture impossible : {e}")
+        st.stop()
+    if df_raw.shape[1] < 2:
+        st.sidebar.error("Le fichier doit contenir une colonne de dates et au moins une série.")
+        st.stop()
+    colonnes = list(df_raw.columns)
+    col_date = st.sidebar.selectbox("Colonne des dates", colonnes,
+                                    index=colonnes.index(deviner_date(colonnes, df_raw)))
+    dff = df_raw.copy()
+    try:
+        dff[col_date] = pd.to_datetime(dff[col_date], errors="coerce", dayfirst=True)
+        if dff[col_date].isna().all():
+            raise ValueError
+        dff = dff.dropna(subset=[col_date]).set_index(col_date).sort_index()
+        index_dates_file = True
+    except Exception:
+        st.sidebar.warning("Colonne de dates non reconnue : numérotation simple utilisée.")
+        dff = df_raw.copy()
+        dff.index = range(len(dff))
+        col_date = None
+        index_dates_file = False
+    scols = [c for c in dff.columns if c != col_date and pd.api.types.is_numeric_dtype(dff[c])]
+    for c in dff.columns:
+        if c not in scols and c != col_date:
+            conv = pd.to_numeric(dff[c].astype(str).str.replace(" ", "").str.replace(",", "."),
+                                 errors="coerce")
+            if conv.notna().mean() > 0.8:
+                dff[c] = conv
+                scols.append(c)
+    if not scols:
+        st.sidebar.error("Aucune colonne numérique exploitable dans le fichier.")
+        st.stop()
+    df_file = dff[scols].astype(float)
 
-df = df_raw.copy()
-try:
-    df[col_date] = pd.to_datetime(df[col_date], errors="coerce", dayfirst=True)
-    if df[col_date].isna().all():
-        raise ValueError
-    df = df.dropna(subset=[col_date]).set_index(col_date).sort_index()
+
+def fusionner_sources(parts):
+    """Aligne plusieurs sources sur un pas hebdomadaire commun (vendredi) et joint
+    les semaines communes — évite les désalignements entre fichier et Yahoo."""
+    rs = [d.resample("W-FRI").last() if isinstance(d.index, pd.DatetimeIndex) else d
+          for d in parts]
+    out = pd.concat(rs, axis=1, join="inner")
+    out = out.loc[:, ~out.columns.duplicated()]
+    return out.dropna()
+
+
+# --- Jeu de données final : fichier, Yahoo, ou les deux fusionnés -------
+if df_file is not None and df_yahoo is not None:
+    df = fusionner_sources([df_file, df_yahoo])
     index_dates = True
-except Exception:
-    st.sidebar.warning("Colonne de dates non reconnue : numérotation simple utilisée.")
-    df = df_raw.copy()
-    df.index = range(len(df))
-    index_dates = False
+    st.sidebar.success(f"🔗 Fusion fichier + Yahoo : {df.shape[1]} séries, "
+                       f"{len(df)} semaines communes.")
+elif df_file is not None:
+    df = df_file
+    index_dates = index_dates_file
+else:
+    df = df_yahoo.copy()
+    index_dates = True
 
-# --- Colonnes numériques (séries) -------------------------------------
-series_cols = [c for c in df.columns if c != col_date and pd.api.types.is_numeric_dtype(df[c])]
-# Tentative de conversion des colonnes texte → numérique (virgules, espaces)
-for c in df.columns:
-    if c not in series_cols and c != col_date:
-        conv = pd.to_numeric(
-            df[c].astype(str).str.replace(" ", "").str.replace(",", "."),
-            errors="coerce",
-        )
-        if conv.notna().mean() > 0.8:
-            df[c] = conv
-            series_cols.append(c)
-
-if not series_cols:
-    st.sidebar.error("Aucune colonne numérique exploitable trouvée.")
+if df.shape[1] < 1 or len(df) < 3:
+    st.sidebar.error("Pas assez de données communes (élargis la période ou réduis les séries).")
     st.stop()
 
+series_cols = list(df.columns)
 df = df[series_cols].astype(float)
 
 # --- Plage d'étude : filtre de dates global ---------------------------
