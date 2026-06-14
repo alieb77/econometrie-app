@@ -141,18 +141,101 @@ def telecharger_df(df: pd.DataFrame, label: str, fichier: str, key=None):
     )
 
 
-def ecrire_rapport_xlsx(feuilles: dict) -> bytes:
+def _fig_png(fig) -> io.BytesIO:
+    """Rend une figure matplotlib en PNG (BytesIO) prête à insérer dans Excel."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _chart_volatilites(df):
+    fig, ax = plt.subplots(figsize=(9, 3.8))
+    for c in df.columns:
+        ax.plot(df.index, df[c], lw=0.9, label=str(c)[:22])
+    ax.set_title("Volatilité conditionnelle GARCH")
+    ax.set_ylabel("σₜ"); ax.legend(loc="upper left", fontsize=7, ncol=2)
+    return _fig_png(fig)
+
+
+def _chart_rho(df):
+    fig, ax = plt.subplots(figsize=(9, 3.8))
+    for c in df.columns:
+        lab = c if isinstance(c, str) else " ".join(map(str, c))
+        ax.plot(df.index, df[c], lw=0.9, label=str(lab)[:28])
+    ax.axhline(0, color="0.6", lw=0.6)
+    ax.set_title("Corrélation conditionnelle dynamique (DCC) ρₜ")
+    ax.set_ylabel("ρₜ"); ax.legend(loc="upper left", fontsize=7)
+    return _fig_png(fig)
+
+
+def _chart_granger(df):
+    d = df.copy()
+    d["F"] = pd.to_numeric(d["F"], errors="coerce")
+    d["p"] = pd.to_numeric(d["p-value (F)"], errors="coerce")
+    d = d.dropna(subset=["F", "p"])
+    if d.empty:
+        raise ValueError("pas de données Granger")
+    agg = d.loc[d.groupby("Sens")["p"].idxmin()].sort_values("F")  # F au retard le + signif.
+    couleurs = [ROUGE if p < 0.05 else "0.6" for p in agg["p"]]
+    fig, ax = plt.subplots(figsize=(9, 0.7 + 0.45 * len(agg)))
+    ax.barh(agg["Sens"].astype(str), agg["F"], color=couleurs)
+    ax.axvline(3.84, color="red", ls="--", lw=1, label="seuil F ≈ 3,84 (5 %)")
+    ax.set_xlabel("Statistique F (retard le plus significatif)")
+    ax.set_title("Causalité de Granger — F par direction")
+    ax.legend(loc="lower right", fontsize=7)
+    return _fig_png(fig)
+
+
+def _chart_forbes(df):
+    cols3 = ["ρ stable", "ρ crise (brut)", "ρ crise (ajusté)"]
+    d = df.copy()
+    for c in cols3:
+        d[c] = pd.to_numeric(d.get(c), errors="coerce")
+    d = d.dropna(subset=cols3)
+    if d.empty:
+        raise ValueError("pas de données Forbes-Rigobon")
+    labels = [f"{str(r['Source (crise)'])[:6]}→{str(r['Récepteur'])[:6]}\n{str(r.get('Crise', ''))[:10]}"
+              for _, r in d.iterrows()]
+    x = np.arange(len(d)); w = 0.26
+    fig, ax = plt.subplots(figsize=(max(7, 1.15 * len(d)), 4))
+    ax.bar(x - w, d["ρ stable"], w, label="ρ stable", color="#4caf50")
+    ax.bar(x, d["ρ crise (brut)"], w, label="ρ crise (brut)", color="#f44336")
+    ax.bar(x + w, d["ρ crise (ajusté)"], w, label="ρ crise (ajusté)", color="#ff9800")
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=7)
+    ax.axhline(0, color="black", lw=0.5)
+    ax.set_ylabel("Corrélation")
+    ax.set_title("Forbes-Rigobon — contagion vs interdépendance")
+    ax.legend(loc="upper left", fontsize=7)
+    return _fig_png(fig)
+
+
+_CHART_BUILDERS = {
+    "Volatilités GARCH": _chart_volatilites,
+    "DCC rho_t": _chart_rho,
+    "Causalité Granger": _chart_granger,
+    "Forbes-Rigobon": _chart_forbes,
+}
+
+
+def ecrire_rapport_xlsx(feuilles: dict, avec_graphiques: bool = True) -> bytes:
     """Écrit un dict {nom_feuille: DataFrame} dans un classeur Excel mis en forme
-    (en-têtes bleus, volets figés, largeurs de colonnes ajustées)."""
+    (en-têtes bleus, volets figés, largeurs ajustées). Si `avec_graphiques`,
+    insère un graphe représentatif dans les feuilles GARCH, DCC, Granger et
+    Forbes-Rigobon."""
     from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.utils import get_column_letter
     entete_font = Font(bold=True, color="FFFFFF")
     entete_fill = PatternFill("solid", fgColor="1F4E79")
     centre = Alignment(horizontal="center", vertical="center")
+    images = []                                   # garde les PNG en vie jusqu'au save
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for nom, df in feuilles.items():
+        for nom, df_orig in feuilles.items():
             sname = str(nom)[:31]
-            df = arrondir_pour_excel(df)              # max 3 décimales, « ≈ 0 » sinon
+            df = arrondir_pour_excel(df_orig)         # max 3 décimales, « ≈ 0 » sinon
             ecrire_index = not isinstance(df.index, pd.RangeIndex)
             df.to_excel(writer, sheet_name=sname, index=ecrire_index)
             ws = writer.sheets[sname]
@@ -164,6 +247,18 @@ def ecrire_rapport_xlsx(feuilles: dict) -> bytes:
             for col in ws.columns:
                 largeur = max((len(str(c.value)) for c in col if c.value is not None), default=10)
                 ws.column_dimensions[col[0].column_letter].width = min(max(largeur + 2, 11), 44)
+            # graphe représentatif à droite du tableau
+            builder = _CHART_BUILDERS.get(nom) if avec_graphiques else None
+            if builder is not None:
+                try:
+                    png = builder(df_orig)
+                    img = XLImage(png)
+                    ncols = df.shape[1] + (1 if ecrire_index else 0)
+                    img.anchor = f"{get_column_letter(ncols + 2)}2"
+                    ws.add_image(img)
+                    images.append(png)
+                except Exception:
+                    pass
     return buffer.getvalue()
 
 
@@ -1607,6 +1702,10 @@ with onglets[9]:
                     )
 
         maxlag_rap = st.slider("Retards maximum (Granger)", 1, 8, 4, key="rap_lag")
+        inclure_graphes = st.checkbox(
+            "📊 Inclure des graphiques dans le rapport (volatilité GARCH, ρₜ DCC, "
+            "Granger, Forbes-Rigobon)", value=True, key="rap_graphes",
+        )
         st.caption("Le rapport respecte la **Plage d'étude** et la **fréquence** "
                    "réglées dans la barre latérale.")
 
@@ -1618,8 +1717,9 @@ with onglets[9]:
                         crises=crises_list,
                         maxlag_granger=maxlag_rap,
                         freq_label=freq,
+                        avec_graphiques=inclure_graphes,
                     )
-                    xlsx_bytes = ecrire_rapport_xlsx(feuilles)
+                    xlsx_bytes = ecrire_rapport_xlsx(feuilles, avec_graphiques=inclure_graphes)
                 st.session_state["rapport_xlsx"] = xlsx_bytes
                 st.session_state["rapport_nom"] = f"rapport_{principale}.xlsx"
                 st.session_state["rapport_feuilles"] = list(feuilles.keys())

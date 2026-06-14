@@ -910,6 +910,7 @@ def rapport_complet(
     dcc_o: int = 0,
     arch_lags: int = 12,
     freq_label: str = "Hebdomadaire",
+    avec_graphiques: bool = True,
 ) -> dict:
     """Construit un rapport complet, organisé autour d'une **série principale**
     comparée à toutes les autres. Renvoie un dictionnaire ordonné
@@ -1007,8 +1008,19 @@ def rapport_complet(
                            "Effets ARCH (5 %)": "erreur"})
     feuilles["Effets ARCH-LM"] = pd.DataFrame(lignes)
 
+    # --- Volatilités conditionnelles GARCH (données pour le graphe) ---
+    if avec_graphiques:
+        try:
+            vol_df = garch_vol_matrix(returns, dist=dcc_dist, vol=dcc_vol, o=dcc_o)
+            if est_date:
+                vol_df.index.name = "Date"
+            feuilles["Volatilités GARCH"] = vol_df
+        except Exception:
+            pass
+
     # --- 5. DCC-GARCH (principale vs chaque autre) --------------------
     lignes = []
+    rho_dict = {}
     for o in autres:
         try:
             d = dcc_garch_bivariate(returns[principal], returns[o],
@@ -1019,9 +1031,15 @@ def rapport_complet(
                 "ρ moyenne": d["rho_moyenne"], "ρ min": d["rho_min"], "ρ max": d["rho_max"],
                 "ρ inconditionnelle": d["rho_inconditionnelle"], "n_obs": d["n_obs"],
             })
+            rho_dict[f"{principal} – {o}"] = d["rho_t"]
         except Exception as e:
             lignes.append({"Principale": principal, "Autre": o, "a (réaction)": f"erreur : {e}"})
     feuilles["DCC-GARCH"] = pd.DataFrame(lignes)
+    if avec_graphiques and rho_dict:
+        df_rho = pd.concat(rho_dict, axis=1)
+        if est_date:
+            df_rho.index.name = "Date"
+        feuilles["DCC rho_t"] = df_rho
 
     # --- 6. Causalité de Granger (les 2 sens, tous les retards) -------
     lignes = []
