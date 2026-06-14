@@ -644,19 +644,19 @@ if use_example:
     with open(EXEMPLE_PATH, "rb") as _f:
         d_ex, e_ex = parse_source(_f.read(), "exemple_donnees.xlsx")
     if d_ex is not None:
-        sources.append((d_ex, e_ex))
+        sources.append((d_ex, e_ex, "Exemple"))
     st.sidebar.success("📊 Données d'exemple chargées.")
 else:
     for f in fichiers:
         d_f, e_f = parse_source(f.getvalue(), f.name)
         if d_f is not None:
-            sources.append((d_f, e_f))
+            sources.append((d_f, e_f, f.name))
 
 if df_yahoo is not None:
-    sources.append((df_yahoo, True))
+    sources.append((df_yahoo, True, "Catalogue Yahoo Finance"))
 
 if masi_integre is not None:
-    sources.append((masi_integre, True))
+    sources.append((masi_integre, True, "MASI (Maroc) intégré"))
 
 if not sources:
     st.title("📈 Économétrie financière des indices boursiers")
@@ -675,6 +675,17 @@ else:
     index_dates = True
     n_fusion = len(dfs)
 
+# Récapitulatif d'alignement (transparence) : période de chaque source
+apercu_alignement = []
+for (d, _e, _lab) in sources:
+    if isinstance(d.index, pd.DatetimeIndex) and len(d):
+        apercu_alignement.append({"Source": _lab, "Séries": len(d.columns),
+                                  "Début": str(d.index.min().date()),
+                                  "Fin": str(d.index.max().date()), "Observations": len(d)})
+    else:
+        apercu_alignement.append({"Source": _lab, "Séries": len(d.columns),
+                                  "Début": "—", "Fin": "—", "Observations": len(d)})
+
 # Garde-fou : si la fusion ne laisse pas assez de données, on l'explique
 # DANS LA ZONE PRINCIPALE (et pas seulement dans la barre latérale cachée).
 if df.shape[1] < 1 or len(df) < 3:
@@ -682,12 +693,12 @@ if df.shape[1] < 1 or len(df) < 3:
     if n_fusion > 1:
         # détail des plages de chaque source pour comprendre le non-chevauchement
         lignes = []
-        for (d, _e) in sources:
+        for (d, _e, _lab) in sources:
             if isinstance(d.index, pd.DatetimeIndex) and len(d):
-                lignes.append(f"- **{', '.join(map(str, d.columns))[:60]}** : "
+                lignes.append(f"- **{_lab}** ({', '.join(map(str, d.columns))[:50]}) : "
                               f"{d.index.min().date()} → {d.index.max().date()} ({len(d)} lignes)")
             else:
-                lignes.append(f"- **{', '.join(map(str, d.columns))[:60]}** : "
+                lignes.append(f"- **{_lab}** ({', '.join(map(str, d.columns))[:50]}) : "
                               f"dates non reconnues ({len(d)} lignes)")
         st.error(
             "❌ **Les sources n'ont aucune période commune après alignement** "
@@ -849,6 +860,23 @@ onglets = st.tabs([
 # ----------------------------------------------------------------------
 with onglets[0]:
     st.subheader("Aperçu des données")
+
+    # Récapitulatif d'alignement automatique (quand plusieurs sources combinées)
+    if n_fusion > 1:
+        per = (f"{df.index.min().date()} → {df.index.max().date()}"
+               if index_dates else f"{len(df)} points")
+        st.success(
+            f"✅ **{n_fusion} sources alignées automatiquement** par semaine commune "
+            f"(les dates n'ont pas besoin d'être identiques d'une série à l'autre). "
+            f"Résultat : **{df.shape[1]} séries × {len(df)} semaines** communes ({per})."
+        )
+        with st.expander("🔎 Détail de l'alignement par source"):
+            st.dataframe(pd.DataFrame(apercu_alignement), width="stretch", hide_index=True)
+            st.caption("Chaque observation est rattachée à sa semaine ; seules les semaines "
+                       "présentes dans **toutes** les sources sont conservées (jointure stricte, "
+                       "nécessaire pour des tests valides). Élargis les périodes pour gagner des "
+                       "semaines communes.")
+
     c1, c2 = st.columns([2, 1])
     with c1:
         st.dataframe(df, width="stretch", height=360)
