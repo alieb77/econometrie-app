@@ -678,11 +678,33 @@ def parse_source(contenu, nom):
     return dff[scols].astype(float), est_date
 
 
+def _hebdo_semaine_iso(d):
+    """Ramène une source à un point par SEMAINE CALENDAIRE ISO, réindexé sur le
+    vendredi de la semaine. On regroupe par (année ISO, semaine ISO) et on garde
+    la dernière observation de chaque semaine."""
+    if not isinstance(d.index, pd.DatetimeIndex):
+        return d
+    iso = d.index.isocalendar()
+    cle = (iso["year"].astype(int) * 100 + iso["week"].astype(int)).values
+    g = d.groupby(cle).last()
+    g.index = pd.DatetimeIndex(
+        [pd.Timestamp.fromisocalendar(int(k) // 100, int(k) % 100, 5) for k in g.index]
+    )
+    return g.sort_index()
+
+
 def fusionner_sources(parts):
-    """Aligne plusieurs sources sur un pas hebdomadaire commun (vendredi) et joint
-    les semaines communes — évite les désalignements entre fichiers / Yahoo."""
-    rs = [d.resample("W-FRI").last() if isinstance(d.index, pd.DatetimeIndex) else d
-          for d in parts]
+    """Aligne plusieurs sources sur un pas hebdomadaire commun et joint les
+    semaines communes.
+
+    L'alignement se fait par SEMAINE CALENDAIRE ISO, et non par un resample
+    « W-FRI ». En effet, les exports investing.com sont datés le dimanche tandis
+    que les indices MASI sont datés le vendredi : le resample W-FRI repoussait les
+    séries internationales d'une semaine, ce qui produisait de fausses causalités
+    (p. ex. « le MASI précède le MSCI World »). En regroupant par semaine ISO puis
+    en réindexant sur le vendredi, chaque clôture hebdomadaire est replacée sur la
+    bonne semaine, quel que soit le jour de cotation de la source."""
+    rs = [_hebdo_semaine_iso(d) for d in parts]
     out = pd.concat(rs, axis=1, join="inner")
     return out.dropna()
 
