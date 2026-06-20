@@ -1236,19 +1236,33 @@ def rapport_complet(
         feuilles["DCC rho_t"] = df_rho
 
     # --- 6. Causalité de Granger (les 2 sens, tous les retards) -------
+    # Garde-fou de fiabilité : quand la corrélation contemporaine d'un couple est
+    # quasi nulle (|ρ| < SEUIL_RHO_FIABLE), le test de Granger devient instable et
+    # peut afficher une « causalité » qui n'a aucun contenu économique (typique
+    # d'un proxy mono-valeur faiblement relié au reste). On signale alors le résultat.
+    SEUIL_RHO_FIABLE = 0.15
     lignes = []
     for o in autres:
         try:
+            rho0 = float(returns[principal].corr(returns[o]))
+            faible = abs(rho0) < SEUIL_RHO_FIABLE
             g = granger_bidirectional(returns[principal].rename(principal),
                                       returns[o].rename(o), maxlag=maxlag_granger)
             for sens, tab in [(f"{principal} → {o}", g["a_vers_b"]),
                               (f"{o} → {principal}", g["b_vers_a"])]:
                 for _, r in tab.iterrows():
+                    sig = bool(r["Significatif (5 %)"])
+                    if not sig:
+                        interp = "Pas de causalité"
+                    elif faible:
+                        interp = f"Peu fiable : précède mais ρ contemp.≈{rho0:.2f} (quasi nulle)"
+                    else:
+                        interp = "Précède (causalité)"
                     lignes.append({"Sens": sens, "Retard": int(r["Retard"]),
                                    "F": r["F"], "p-value (F)": r["p-value (F)"],
+                                   "ρ contemp.": round(rho0, 3),
                                    "Significatif (5 %)": r["Significatif (5 %)"],
-                                   "Interprétation": ("Précède (causalité)"
-                                                      if r["Significatif (5 %)"] else "Pas de causalité")})
+                                   "Interprétation": interp})
         except Exception as e:
             lignes.append({"Sens": f"{principal} ↔ {o}", "Retard": np.nan, "F": np.nan,
                            "p-value (F)": f"erreur : {e}", "Significatif (5 %)": "",

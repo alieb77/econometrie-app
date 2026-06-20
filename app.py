@@ -242,9 +242,9 @@ def _fill_verdict(colname, val):
     if colname == "Interprétation":
         if s.startswith("Contagion"):
             return ROUGE
-        if s.startswith("Non valide") or s == "—":
+        if s.startswith("Non valide") or s.startswith("Sens non pertinent") or s == "—":
             return GRIS
-        if s.startswith(("Non stationnaire", "Pas ", "Non normale")):
+        if s.startswith(("Non stationnaire", "Pas ", "Non normale", "Peu fiable")):
             return ORANGE
         if s.startswith(("Stationnaire", "Effets ARCH", "Précède", "Interdépendance", "Normale")):
             return VERT
@@ -1288,6 +1288,16 @@ with onglets[4]:
                         f"ce sens peut alors être un **pur artefact**. Vérifiez que toutes vos "
                         f"séries partagent la **même convention de date** (même jour de clôture, "
                         f"aucun décalage appliqué lors de la préparation des données)."
+                    )
+
+                # Garde-fou fiabilité : corrélation contemporaine quasi nulle -> Granger instable.
+                if corr0 < 0.15:
+                    st.warning(
+                        f"⚠️ **Causalité de Granger peu fiable ici.** La corrélation contemporaine "
+                        f"entre **{serie_a}** et **{serie_b}** est très faible (ρ ≈ {corr0:.2f}). "
+                        f"À ce niveau, le test peut afficher une « causalité » dans un sens ou l'autre "
+                        f"sans contenu économique réel (fréquent avec un proxy mono-valeur faiblement "
+                        f"relié au reste). À interpréter avec prudence."
                     )
 
                 col1, col2 = st.columns(2)
