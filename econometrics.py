@@ -1127,10 +1127,11 @@ def rapport_complet(
         infos.append("Lecture Forbes-Rigobon")
         vals.append(
             "« Source » = marché dont la hausse de volatilité sert d'étalon d'ajustement "
-            "(idéalement le marché d'origine du choc, le plus grand). Le test compare des "
-            "corrélations : il n'est PAS causal. À privilégier : le sens où le grand marché "
-            "est la source. Désigner le petit marché comme source applique peu de correction "
-            "et peut faire apparaître une fausse contagion."
+            "(le marché réellement frappé par le choc). Le test compare des corrélations : "
+            "il n'est PAS causal. Les deux sens sont affichés, mais le verdict n'est retenu "
+            "que pour le sens où la source a la plus forte hausse de volatilité (δ le plus "
+            "élevé) ; le sens inverse, sous-ajusté, est marqué « source 2ndaire » et ne doit "
+            "pas être lu comme une contagion."
         )
     feuilles["Synthèse"] = pd.DataFrame({"Information": infos, "Valeur": vals})
 
@@ -1264,33 +1265,53 @@ def rapport_complet(
                 index=returns.index,
             )
             for o in autres:
+                # Forbes-Rigobon compare des corrélations symétriques ; seul l'ajustement
+                # de volatilité diffère selon le marché désigné « source ». La source
+                # LÉGITIME est le marché réellement frappé par le choc, c.-à-d. celui dont
+                # la volatilité augmente le plus (δ le plus élevé). Désigner le petit marché
+                # calme comme source applique une correction quasi nulle et fait apparaître
+                # une FAUSSE contagion : on calcule donc les deux sens, on retient comme
+                # concluant celui dont la source a le plus fort δ, et on neutralise l'autre.
+                paire = {}
                 for src, rcp in [(principal, o), (o, principal)]:
                     try:
-                        fr = forbes_rigobon_test(returns[src].rename(src),
-                                                 returns[rcp].rename(rcp), mask)
-                        delta = fr["delta_volatilite"]
-                        valide = delta > 0   # FR suppose une HAUSSE de volatilité de la source
-                        if not valide:
-                            _interp_fr = "Non valide (δ≤0)"
-                        elif fr["contagion_5pct"]:
-                            _interp_fr = "Contagion"
-                        else:
-                            _interp_fr = "Interdépendance"
-                        lignes.append({
-                            "Crise": cr["nom"],
-                            "Source (crise)": src, "Récepteur": rcp,
-                            "ρ stable": fr["rho_stable"], "ρ crise (brut)": fr["rho_crisis_brut"],
-                            "ρ crise (ajusté)": fr["rho_crisis_ajuste"], "δ (volatilité)": delta,
-                            "z ajusté": fr["z_ajuste"], "p-value (ajusté)": fr["p_value_ajuste"],
-                            "Contagion (5 %)": (fr["contagion_5pct"] if valide else "n/a (δ≤0)"),
-                            "Interprétation": _interp_fr,
-                            "Validité": ("OK" if valide
-                                         else "δ≤0 : volatilité source non accrue → sens NON valide"),
-                            "n stable": fr["n_stable"], "n crise": fr["n_crisis"],
-                        })
+                        paire[(src, rcp)] = forbes_rigobon_test(
+                            returns[src].rename(src), returns[rcp].rename(rcp), mask)
                     except Exception as e:
+                        paire[(src, rcp)] = e
+                deltas = {k: (v["delta_volatilite"] if not isinstance(v, Exception)
+                              else float("-inf")) for k, v in paire.items()}
+                sens_legitime = max(deltas, key=deltas.get)   # source = plus forte hausse de vol.
+                delta_max = deltas[sens_legitime]
+                for (src, rcp), fr in paire.items():
+                    if isinstance(fr, Exception):
                         lignes.append({"Crise": cr["nom"], "Source (crise)": src,
-                                       "Récepteur": rcp, "ρ stable": f"erreur : {e}"})
+                                       "Récepteur": rcp, "ρ stable": f"erreur : {fr}"})
+                        continue
+                    delta = fr["delta_volatilite"]
+                    if delta <= 0:                       # FR suppose une HAUSSE de vol. de la source
+                        contagion_cell, _interp_fr = "n/a (δ≤0)", "Non valide (δ≤0)"
+                        validite = "δ≤0 : volatilité source non accrue → sens NON valide"
+                    elif (src, rcp) != sens_legitime:    # source secondaire : sous-ajustement
+                        contagion_cell = "n/a (source 2ndaire)"
+                        _interp_fr = "Sens non pertinent (source sous-volatile)"
+                        validite = (f"source sous-volatile : δ={delta:.2f} < δ={delta_max:.2f} "
+                                    f"de l'autre sens → sous-ajustement, ignorer ce sens")
+                    elif fr["contagion_5pct"]:
+                        contagion_cell, _interp_fr, validite = True, "Contagion", "OK"
+                    else:
+                        contagion_cell, _interp_fr, validite = False, "Interdépendance", "OK"
+                    lignes.append({
+                        "Crise": cr["nom"],
+                        "Source (crise)": src, "Récepteur": rcp,
+                        "ρ stable": fr["rho_stable"], "ρ crise (brut)": fr["rho_crisis_brut"],
+                        "ρ crise (ajusté)": fr["rho_crisis_ajuste"], "δ (volatilité)": delta,
+                        "z ajusté": fr["z_ajuste"], "p-value (ajusté)": fr["p_value_ajuste"],
+                        "Contagion (5 %)": contagion_cell,
+                        "Interprétation": _interp_fr,
+                        "Validité": validite,
+                        "n stable": fr["n_stable"], "n crise": fr["n_crisis"],
+                    })
         feuilles["Forbes-Rigobon"] = pd.DataFrame(lignes)
 
     return feuilles
