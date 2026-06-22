@@ -709,6 +709,37 @@ def fusionner_sources(parts):
     return out.dropna()
 
 
+def _serie_cloture(contenu, nom):
+    """Extrait une série de clôture (indexée par date) d'un fichier investing.com,
+    sans interaction utilisateur (utilisée par l'onglet « Construire un indice »).
+    Gère le format de nombres FR/EN et la détection automatique de la colonne de dates."""
+    try:
+        df = lire_fichier(contenu, nom, 0)
+    except Exception:
+        return None
+    if df.shape[1] < 2:
+        return None
+    low = {str(c).strip().lower(): c for c in df.columns}
+    dc = low.get("date") or deviner_date(list(df.columns), df)
+    ck = next((k for k in _CLOTURE if k in low and low[k] != dc), None)
+    if ck is not None:
+        s = df[low[ck]].astype(str).str.replace(" ", "", regex=False)
+        if _CLOTURE[ck] == "fr":
+            s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+        else:
+            s = s.str.replace(",", "", regex=False)
+        val = pd.to_numeric(s, errors="coerce")
+    else:
+        num = [c for c in df.columns if c != dc and pd.to_numeric(df[c], errors="coerce").notna().any()]
+        if not num:
+            return None
+        val = pd.to_numeric(df[num[0]], errors="coerce")
+    d = parser_dates(df[dc])
+    out = pd.Series(val.values, index=d, name=nom_instrument(nom)).dropna()
+    out = out[~out.index.isna()].sort_index()
+    return out if len(out) else None
+
+
 def noms_uniques(dfs):
     """Évite les collisions de noms de colonnes entre sources (suffixe (2), (3)…)."""
     vus, out = {}, []
@@ -939,6 +970,7 @@ onglets = st.tabs([
     "8️⃣ Portefeuille (DCC)",
     "📑 Rapport Excel",
     "ℹ️ Méthodologie",
+    "🏗️ Construire un indice",
 ])
 
 # ----------------------------------------------------------------------
@@ -2352,6 +2384,110 @@ with onglets[10]:
         "| Diebold-Yilmaz | `statsmodels.VAR` + maison | GFEVD généralisée |\n"
         "| Portefeuille | maison (`numpy`) | min-variance analytique |"
     )
+
+# ----------------------------------------------------------------------
+# Onglet 11 — Construire un indice sectoriel à partir de ses constituants
+# ----------------------------------------------------------------------
+with onglets[11]:
+    st.subheader("🏗️ Construire un indice sectoriel")
+    st.caption(
+        "Charge les valeurs qui composent le secteur (exports investing.com, un fichier par "
+        "valeur), choisis la pondération, et obtiens une série d'indice base 100 — "
+        "téléchargeable pour la réutiliser dans les autres onglets (DCC, Granger, "
+        "Forbes-Rigobon, Diebold-Yilmaz). Idéal pour remplacer un proxy mono-valeur par un "
+        "vrai indice multi-valeurs."
+    )
+    nom_idx = st.text_input("Nom de l'indice", "Indice sectoriel reconstruit", key="idx_nom")
+    fichiers_idx = st.file_uploader(
+        "Constituants — un fichier par valeur", type=["csv", "xlsx", "xls"],
+        accept_multiple_files=True, key="idx_files")
+
+    if not fichiers_idx:
+        st.info("Charge au moins deux fichiers de valeurs pour construire un indice.")
+    else:
+        series_idx = {}
+        for f in fichiers_idx:
+            s = _serie_cloture(f.getvalue(), f.name)
+            if s is not None:
+                series_idx[s.name] = s
+        if len(series_idx) < 2:
+            st.error("Il faut au moins deux séries de prix valides (vérifie tes fichiers).")
+        else:
+            prix_idx = fusionner_sources([s.to_frame() for s in series_idx.values()])
+            if prix_idx.empty or prix_idx.shape[1] < 2:
+                st.error("Aucune période commune entre les valeurs après alignement.")
+            else:
+                n_val = prix_idx.shape[1]
+                st.success(
+                    f"✅ {n_val} valeurs alignées par semaine ISO — {len(prix_idx)} semaines "
+                    f"communes ({prix_idx.index.min().date()} → {prix_idx.index.max().date()})."
+                )
+                c1, c2, c3 = st.columns(3)
+                pond_lbl = c1.selectbox("Pondération", ["Équipondérée", "Par capitalisation", "Par les prix"], key="idx_pond")
+                rebal_lbl = c2.selectbox("Rééquilibrage", ["Annuel", "Trimestriel", "Aucun"], key="idx_rebal")
+                plaf_pct = c3.number_input("Plafond de poids (%, 0 = aucun)", 0, 100, 0, key="idx_plaf")
+                pond = {"Équipondérée": "equipondere", "Par capitalisation": "capitalisation", "Par les prix": "prix"}[pond_lbl]
+                rebal = {"Annuel": "annuel", "Trimestriel": "trimestriel", "Aucun": "aucun"}[rebal_lbl]
+
+                poids_idx = None
+                if pond == "capitalisation":
+                    st.markdown("**Capitalisation (ou poids relatif) de chaque valeur :**")
+                    poids_idx = {}
+                    cols_w = st.columns(min(4, n_val))
+                    for i, col in enumerate(prix_idx.columns):
+                        poids_idx[col] = cols_w[i % len(cols_w)].number_input(
+                            str(col), min_value=0.0, value=1.0, step=0.1, key=f"idx_cap_{i}")
+
+                plafond = (plaf_pct / 100.0) if plaf_pct > 0 else None
+                if plafond and plafond * n_val < 1.0:
+                    st.warning(
+                        f"⚠️ Un plafond de {plaf_pct} % est infaisable pour {n_val} valeurs "
+                        f"(minimum possible : {100.0 / n_val:.0f} %). Il sera ignoré.")
+
+                if st.button("▶️ Construire l'indice", key="idx_run"):
+                    res = ec.construire_indice(prix_idx, ponderation=pond, poids=poids_idx,
+                                               rebalancement=rebal, plafond=plafond, base=100.0)
+                    niveau, rdt, w_eff, diag = res["niveau"], res["rendements"], res["poids"], res["diagnostics"]
+
+                    fig, ax = plt.subplots(figsize=(8, 3.6))
+                    b100 = prix_idx / prix_idx.iloc[0] * 100.0
+                    for col in prix_idx.columns:
+                        ax.plot(b100.index, b100[col], lw=0.8, alpha=0.45, label=str(col))
+                    ax.plot(niveau.index, niveau.values, lw=2.4, color="black", label=nom_idx)
+                    ax.set_title(f"{nom_idx} et ses constituants (base 100)")
+                    ax.set_ylabel("Base 100"); ax.legend(fontsize=7, ncol=2)
+                    st.pyplot(fig)
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Semaines", diag["n_obs"])
+                    m2.metric("Nb effectif de valeurs", f"{diag['n_effectif']:.1f}")
+                    m3.metric("Concentration (HHI)", f"{diag['herfindahl']:.2f}")
+                    m4.metric("Corrél. moy. constituants", f"{diag['correlation_moy_constituants']:.2f}")
+                    st.caption(
+                        "HHI proche de 1/N = bien diversifié ; proche de 1 = dominé par une valeur. "
+                        "Une corrélation moyenne élevée entre constituants conforte l'existence d'un "
+                        "facteur sectoriel commun (donc d'un indice qui a du sens).")
+
+                    st.markdown("**Poids effectifs au dernier rééquilibrage (%) :**")
+                    st.dataframe((w_eff.iloc[-1].rename("Poids (%)").to_frame().T * 100).round(1),
+                                 width="stretch")
+
+                    sortie = pd.DataFrame({"Date": niveau.index,
+                                           f"{nom_idx} (base 100)": niveau.values.round(4),
+                                           "Rendement (%)": rdt.values.round(4)})
+                    bio = io.BytesIO()
+                    with pd.ExcelWriter(bio, engine="openpyxl") as xl:
+                        sortie.to_excel(xl, index=False, sheet_name="Indice")
+                    st.download_button(
+                        "⬇️ Télécharger l'indice (.xlsx)", bio.getvalue(),
+                        file_name=f"{nom_idx}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="idx_dl")
+                    st.caption(
+                        "Réinjecte ce fichier dans la barre latérale (avec tes homologues "
+                        "internationaux) pour lancer DCC, Granger, Forbes-Rigobon et "
+                        "Diebold-Yilmaz sur l'indice reconstruit.")
+
 
 st.divider()
 st.caption(

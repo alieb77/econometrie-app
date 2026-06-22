@@ -1329,3 +1329,97 @@ def rapport_complet(
         feuilles["Forbes-Rigobon"] = pd.DataFrame(lignes)
 
     return feuilles
+
+
+# ======================================================================
+# 8. Construction d'un indice sectoriel à partir de ses constituants
+# ======================================================================
+def construire_indice(prix, ponderation="equipondere", poids=None,
+                      rebalancement="annuel", plafond=None, base=100.0):
+    """Construit un indice à partir des prix de clôture de ses constituants.
+
+    prix          : DataFrame indexé par date, colonnes = constituants (prix).
+    ponderation   : 'equipondere' | 'capitalisation' | 'prix'.
+    poids         : pour 'capitalisation', dict/Series {constituant: capitalisation}
+                    (valeurs utilisées comme poids relatifs).
+    rebalancement : 'annuel' | 'trimestriel' | 'aucun' (poids fixés au début de
+                    chaque période, sur les constituants disponibles).
+    plafond       : poids maximal par constituant (ex. 0.20) ou None.
+    base          : niveau de base de l'indice (défaut 100).
+
+    Renvoie {'niveau', 'rendements' (%), 'poids', 'diagnostics'}.
+    """
+    prix = prix.sort_index()
+    cols = list(prix.columns)
+    rets = prix.pct_change()
+
+    if rebalancement == "trimestriel":
+        per = pd.Series(prix.index.to_period("Q"), index=prix.index)
+    elif rebalancement == "aucun":
+        per = pd.Series(["tout"] * len(prix), index=prix.index)
+    else:
+        per = pd.Series(prix.index.to_period("Y"), index=prix.index)
+
+    poids_s = pd.Series(poids, dtype=float) if poids is not None else None
+
+    def _plafonner(w, cap):
+        w = w.copy()
+        if cap * len(w) < 1.0 - 1e-9:        # plafond infaisable (cap < 1/N) -> ignoré
+            return w / float(w.sum())
+        for _ in range(200):
+            dep = w > cap + 1e-12
+            if not dep.any():
+                break
+            exces = float((w[dep] - cap).sum())
+            w[dep] = cap
+            libre = (~dep) & (w > 0)
+            if not libre.any() or float(w[libre].sum()) <= 0:
+                break
+            w[libre] = w[libre] + exces * w[libre] / w[libre].sum()
+        s = float(w.sum())
+        return w / s if s > 0 else w          # garantir somme = 1
+
+    poids_par_date = pd.DataFrame(0.0, index=prix.index, columns=cols)
+    for _p, dates in per.groupby(per).groups.items():
+        dates = pd.DatetimeIndex(dates)
+        debut = dates.min()
+        dispo = [c for c in cols if pd.notna(prix.loc[debut, c])]
+        if not dispo:
+            continue
+        if ponderation == "prix":
+            w = prix.loc[debut, dispo].astype(float)
+            w = w / w.sum()
+        elif ponderation == "capitalisation" and poids_s is not None:
+            w = poids_s.reindex(dispo).fillna(0.0).astype(float)
+            w = (w / w.sum()) if float(w.sum()) > 0 else pd.Series(1.0 / len(dispo), index=dispo)
+        else:                                    # équipondéré
+            w = pd.Series(1.0 / len(dispo), index=dispo)
+        if plafond:
+            w = _plafonner(w, float(plafond))
+        for c in dispo:
+            poids_par_date.loc[dates, c] = float(w[c])
+
+    r_idx = pd.Series(np.nan, index=prix.index)
+    r_idx.iloc[0] = 0.0
+    for t in prix.index[1:]:
+        rt, wt = rets.loc[t], poids_par_date.loc[t]
+        m = rt.notna() & (wt > 0)
+        if bool(m.any()) and float(wt[m].sum()) > 0:
+            wn = wt[m] / wt[m].sum()
+            r_idx.loc[t] = float((wn * rt[m]).sum())
+
+    niveau = base * (1.0 + r_idx.fillna(0.0)).cumprod()
+
+    hhi = float((poids_par_date ** 2).sum(axis=1).replace(0, np.nan).mean())
+    off = rets.corr().where(~np.eye(len(cols), dtype=bool))
+    diag = {
+        "n_constituants": len(cols),
+        "n_obs": int(niveau.notna().sum()),
+        "herfindahl": hhi,
+        "n_effectif": (1.0 / hhi if hhi and np.isfinite(hhi) else float("nan")),
+        "couverture_moy": float(prix.notna().sum(axis=1).mean()),
+        "correlation_moy_constituants": float(np.nanmean(off.values)) if len(cols) > 1 else float("nan"),
+        "debut": str(prix.index.min().date()), "fin": str(prix.index.max().date()),
+    }
+    return {"niveau": niveau, "rendements": r_idx * 100.0,
+            "poids": poids_par_date, "diagnostics": diag}
