@@ -31,10 +31,10 @@ jobs:
     steps:
       - name: Ping de l'application Streamlit
         env:
-          # URL publique de l'app, ex : https://econometrie-app.streamlit.app
-          # Définie dans : Settings ▸ Secrets and variables ▸ Actions ▸ Variables
-          # (nom : APP_URL). On peut aussi la coller en dur ci-dessous à la place.
-          APP_URL: ${{ vars.APP_URL }}
+          # URL publique de l'app, en dur. On peut la surcharger sans toucher au
+          # code via une variable GitHub `APP_URL` (Settings ▸ Secrets and
+          # variables ▸ Actions ▸ Variables) : si elle existe, elle a priorité.
+          APP_URL: ${{ vars.APP_URL || 'https://econometrie-app-7.streamlit.app' }}
         run: |
           set -u
           if [ -z "${APP_URL:-}" ]; then
