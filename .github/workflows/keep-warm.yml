@@ -1,0 +1,61 @@
+name: keep-warm
+
+# Garde l'app Streamlit « éveillée ».
+#
+# Streamlit Community Cloud met une app en veille après une période sans trafic.
+# Comme Streamlit Cloud n'offre PAS de cron intégré (contrairement à Vercel pour
+# l'app troc), on utilise le planificateur gratuit de GitHub Actions : un ping
+# léger et périodique remet à zéro le compteur d'inactivité, donc l'app ne
+# s'endort jamais et le premier visiteur n'a plus l'écran « wake up » à ~30 s.
+#
+# Requête publique, en lecture seule, sans donnée personnelle : on tape la page
+# racine + l'endpoint de santé `/_stcore/health` de Streamlit.
+
+on:
+  schedule:
+    # Toutes les 6 heures (UTC). Cron GitHub = équivalent du cron Vercel de troc.
+    - cron: "17 */6 * * *"
+  workflow_dispatch: {} # bouton « Run workflow » pour tester à la main
+
+# Pas besoin de droits d'écriture : on ne fait que des requêtes sortantes.
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping de l'application Streamlit
+        env:
+          # URL publique de l'app, ex : https://econometrie-app.streamlit.app
+          # Définie dans : Settings ▸ Secrets and variables ▸ Actions ▸ Variables
+          # (nom : APP_URL). On peut aussi la coller en dur ci-dessous à la place.
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          set -u
+          if [ -z "${APP_URL:-}" ]; then
+            echo "::error::La variable APP_URL n'est pas définie."
+            echo "Ajoute-la dans Settings ▸ Secrets and variables ▸ Actions ▸ Variables,"
+            echo "ou colle l'URL en dur dans .github/workflows/keep-warm.yml."
+            exit 1
+          fi
+
+          base="${APP_URL%/}"
+          echo "Ping de $base"
+
+          # Plusieurs tentatives espacées : le trafic suffit à réarmer le
+          # compteur de veille de Streamlit (on ne transfère aucune donnée utile).
+          for i in 1 2 3; do
+            health=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 60 \
+              "$base/_stcore/health" || echo "000")
+            root=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 90 \
+              "$base/" || echo "000")
+            echo "Tentative $i — health=$health  racine=$root"
+            [ "$i" -lt 3 ] && sleep 20 || true
+          done
+
+          echo "Ping terminé."
